@@ -11,7 +11,7 @@ import (
 
 func SaveFile(c *fiber.Ctx, file *multipart.FileHeader, artist string, title string) (string, error) {
     filename := fmt.Sprintf("%s-%s.mp3", artist, title)
-    filepath := filepath.Join("./storage/songs", filename)
+    filepath := filepath.Join("./storage/songs/", filename)
 
     dst, err := os.Create(filepath)
     if err != nil {

@@ -34,7 +34,7 @@ func main() {
     app.Get("/api/songs", SongHandler.GetAllSongs)
     app.Get("/api/songs/:id", SongHandler.GetSongByID)
     app.Get("/api/songs/search", SongHandler.GetSongsSearch)
-    app.Post("/api/songs", SongHandler.CreateSong)
+    app.Post("/api/songs/upload", SongHandler.UploadSong)
     
     app.Static("/music", "./storage/canciones")
     app.Static("/images", "./storage/portadas")

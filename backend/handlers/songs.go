@@ -3,8 +3,10 @@ package handlers
 import (
     "strconv"
 
+    "os"
+    "path/filepath"
+    "encoding/base64"
     "github.com/gofiber/fiber/v2"
-    "github.com/h2non/filetype"
     "gorm.io/gorm"
     "distributed-systems-project/models"
     "distributed-systems-project/filters"
@@ -42,7 +44,7 @@ func (h *SongHandler) InsertSong(c *fiber.Ctx, songInput *structs.SongInputModel
 }
 
 func (h *SongHandler) UploadSong(c *fiber.Ctx) error {
-    file, err := c.FormFile("song")
+    file, err := c.FormFile("file")
 
     if err != nil {
         return c.Status(fiber.StatusBadRequest).SendString("No se recibió el archivo")
@@ -84,9 +86,43 @@ func (h *SongHandler) GetAllSongs(c *fiber.Ctx) error {
     var songs []models.Song
     result := h.DB.Find(&songs)
     if result.Error != nil {
-        return c.Status(500).JSON(fiber.Map{"error": result.Error.Error()})
+        return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": result.Error.Error()})
     }
-    return c.JSON(songs)
+
+    var response []structs.SongResponse
+
+    for _, song := range songs {
+        fileData, err := os.ReadFile(song.File)
+        fileBase64 := ""
+        if err != nil {
+            fileBase64 = "" 
+        } else {
+            fileBase64 = base64.StdEncoding.EncodeToString(fileData)
+        }
+
+        coverBase64 := ""
+        if song.Cover != "" {
+            coverData, err := os.ReadFile(song.Cover)
+            if err != nil {
+                coverBase64 = "" 
+            } else {
+                coverBase64 = base64.StdEncoding.EncodeToString(coverData)
+            }
+        }
+
+        response = append(response, structs.SongResponse{
+            ID:       song.ID,
+            Title:    song.Title,
+            Artist:   song.Artist,
+            Album:    song.Album,
+            Genre:    song.Genre,
+            Duration: song.Duration,
+            File:     fileBase64,
+            Cover:    coverBase64,
+        })
+    }
+
+    return c.JSON(response)
 }
 
 func (h *SongHandler) GetSongByID(c *fiber.Ctx) error {
