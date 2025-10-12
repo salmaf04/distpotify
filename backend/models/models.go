@@ -12,12 +12,8 @@ type Song struct {
     Album     string         `gorm:"size:255" json:"album"`
     Genre     string         `gorm:"size:100" json:"genre"`
     Duration  string         `gorm:"size:10" json:"duration"`
-    Year      int            `json:"year"`
     File      string         `gorm:"not null" json:"file"`
     Cover     string         `json:"cover"`
-    CreatedAt time.Time      `json:"created_at"`
-    UpdatedAt time.Time      `json:"updated_at"`
-    DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
 type Playlist struct {

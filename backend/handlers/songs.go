@@ -4,20 +4,33 @@ import (
     "strconv"
 
     "github.com/gofiber/fiber/v2"
+    "github.com/h2non/filetype"
     "gorm.io/gorm"
     "distributed-systems-project/models"
     "distributed-systems-project/filters"
+    "distributed-systems-project/structs"
+    "distributed-systems-project/utils"
 )
 
 type SongHandler struct {
     DB *gorm.DB
 }
 
-func (h *SongHandler) CreateSong(c *fiber.Ctx) error {
-    var song models.Song
+func (h *SongHandler) InsertSong(c *fiber.Ctx, songInput *structs.SongInputModel) error {
+    songInputCover := ""
+
+    if songInput.Cover != nil {
+        songInputCover = *songInput.Cover
+    }
     
-    if err := c.BodyParser(&song); err != nil {
-        return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+    song := models.Song{
+        Title:    songInput.Title,
+        Artist:   songInput.Artist,
+        Album:    songInput.Album,
+        Genre:    songInput.Genre,
+        Duration: songInput.Duration,
+        File:     songInput.File,
+        Cover:    songInputCover,
     }
 
     result := h.DB.Create(&song)
@@ -26,6 +39,45 @@ func (h *SongHandler) CreateSong(c *fiber.Ctx) error {
     }
 
     return c.Status(201).JSON(song)
+}
+
+func (h *SongHandler) UploadSong(c *fiber.Ctx) error {
+    file, err := c.FormFile("song")
+
+    if err != nil {
+        return c.Status(fiber.StatusBadRequest).SendString("No se recibió el archivo")
+    }
+
+    if filepath.Ext(file.Filename) != ".mp3" {
+        return c.Status(fiber.StatusBadRequest).SendString("Solo se permiten archivos con extensión .mp3")
+    }
+
+    if file.Size > 20*1024*1024 {
+        return c.Status(fiber.StatusBadRequest).SendString("Archivo demasiado grande")
+    }
+
+    title := c.FormValue("title")
+    artist := c.FormValue("artist")
+    album := c.FormValue("album")
+    genre := c.FormValue("genre")
+    duration := c.FormValue("duration")
+    
+    filepath, err := utils.SaveFile(c, file, artist, title); if err != nil {
+        return c.Status(fiber.StatusInternalServerError).SendString("Error al guardar el archivo")
+    } else {
+        song_to_create := &structs.SongInputModel{
+            Title:  title,
+            Artist: artist,
+            Album: album,
+            Genre:  genre,
+            Duration: duration,
+            File:   filepath, 
+        }
+
+        value := h.InsertSong(c, song_to_create)
+    
+        return value
+    }
 }
 
 func (h *SongHandler) GetAllSongs(c *fiber.Ctx) error {
