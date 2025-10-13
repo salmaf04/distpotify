@@ -1,33 +1,36 @@
-version: '3.8'
-
 services:
-  backend:
-    image: be:latest
-    ports:
-      - "8080:8080"
-    environment:
-      - DATABASE_URL=postgresql://local:local@database:5432/spotify
-    depends_on:
-      - database
-    networks:
-      - backend-network
-
   database:
     image: postgres:13
     environment:
-      - POSTGRES_DB=spotify
-      - POSTGRES_USER=local
-      - POSTGRES_PASSWORD=local
+      POSTGRES_DB: spotify
+      POSTGRES_USER: local
+      POSTGRES_PASSWORD: local
+    ports:
+      - "5434:5432"  # host:5434 → contenedor:5432
     volumes:
       - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U local -d spotify"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  backend:
+    build: 
+      context: ..
+      dockerfile: Dockerfile
     ports:
-      - "5432:5432"
-    networks:
-      - backend-network
+      - "8080:8080"
+    environment:
+      DB_HOST: database    # Nombre del servicio
+      DB_PORT: 5432       # ✅ Puerto INTERNO del contenedor
+      DB_NAME: spotify
+      DB_USER: local
+      DB_PASSWORD: local
+    depends_on:
+      database:
+        condition: service_healthy
 
 volumes:
   db_data:
-
-networks:
-  backend-network:
-    driver: bridge
