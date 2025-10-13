@@ -22,7 +22,7 @@ func (h *SongHandler) InsertSong(c *fiber.Ctx, songInput *structs.SongInputModel
     songInputCover := ""
 
     if songInput.Cover != nil {
-        songInputCover = *songInput.Cover
+        songInputCover = *songInput.Cover 
     }
     
     song := models.Song{
