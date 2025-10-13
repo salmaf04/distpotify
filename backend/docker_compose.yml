@@ -25,13 +25,13 @@ services:
     deploy:
       placement:
         constraints:
-          - node.role == manager
+          - node.role == manager  
       replicas: 1
       restart_policy:
         condition: on-failure
 
   backend:
-    image: be:latest
+    image: 192.168.1.106:5000/be:latest  
     ports:
       - target: 3003
         published: 3003
@@ -44,15 +44,13 @@ services:
       DB_USER: local
       DB_PASSWORD: local
       NODE_ENV: production
-    depends_on:
-      - database
     networks:
       - app-network
     deploy:
       replicas: 2
       placement:
         constraints:
-          - node.role == worker
+          - node.role == manager  # ⬅️ SOLO en manager
       update_config:
         parallelism: 1
         delay: 10s

@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   frontend:
-    image: fe:latest
+    image: 192.168.1.106:5000/fe:latest 
     ports:
       - target: 5173
         published: 5173
@@ -16,7 +16,7 @@ services:
       replicas: 2
       placement:
         constraints:
-          - node.role == manager
+          - node.role == worker  
       update_config:
         parallelism: 1
         delay: 10s
