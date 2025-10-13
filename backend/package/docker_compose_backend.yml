@@ -21,7 +21,7 @@ services:
       context: ..
       dockerfile: Dockerfile
     ports:
-      - "8080:8080"
+      - "3003:3003"
     environment:
       DB_HOST: database    # Nombre del servicio
       DB_PORT: 5432       # ✅ Puerto INTERNO del contenedor

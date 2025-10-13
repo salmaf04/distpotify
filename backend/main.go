@@ -22,7 +22,9 @@ func main() {
 	// Migraciones
 	database.DB.AutoMigrate(&models.Song{}, &models.Playlist{})
 
-	app := fiber.New()
+	app := fiber.New(fiber.Config{
+		BodyLimit: 50 * 1024 * 1024, // allow uploads up to 50MB
+	})
 
 	app.Use(cors.New(cors.Config{
 		AllowOrigins: "*",
@@ -32,7 +34,6 @@ func main() {
 
 	// Middlewares
 	app.Use(logger.New())
-	app.Use(cors.New())
 
 	// Handlers
 	SongHandler := &handlers.SongHandler{DB: database.DB}
@@ -43,7 +44,8 @@ func main() {
 	app.Get("/api/songs/search", SongHandler.GetSongsSearch)
 	app.Post("/api/songs/upload", SongHandler.UploadSong)
 
-	app.Static("/music", "./storage/canciones")
+	// Alinear rutas estáticas con directorios reales
+	app.Static("/music", "./storage/songs")
 	app.Static("/images", "./storage/portadas")
 
 	var PORT string = "3003"

@@ -37,6 +37,11 @@ const MusicPlayer = ({ currentSong, onNext, onPrevious }: MusicPlayerProps) => {
     };
   }, []);
 
+  const onNextRef = useRef(onNext);
+  useEffect(() => {
+    onNextRef.current = onNext;
+  }, [onNext]);
+
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
@@ -45,12 +50,18 @@ const MusicPlayer = ({ currentSong, onNext, onPrevious }: MusicPlayerProps) => {
 
     const setup = async () => {
       if (currentSong?.audioUrl) {
-        audio.src = currentSong.audioUrl;
-        audio.currentTime = 0;
+       
+        const isDifferentSrc = audio.src !== currentSong.audioUrl;
+        if (isDifferentSrc) {
+          audio.src = currentSong.audioUrl;
+          audio.currentTime = 0;
+        }
         audio.volume = volumeRef.current / 100;
         try {
-          await audio.play();
-          if (!cancelled) setIsPlaying(true);
+          if (isDifferentSrc) {
+            await audio.play();
+            if (!cancelled) setIsPlaying(true);
+          }
         } catch {
           if (!cancelled) setIsPlaying(false);
         }
@@ -67,7 +78,7 @@ const MusicPlayer = ({ currentSong, onNext, onPrevious }: MusicPlayerProps) => {
     const onTimeUpdate = () => setCurrentTime(audio.currentTime || 0);
     const onEnded = () => {
       setIsPlaying(false);
-      onNext();
+      if (onNextRef.current) onNextRef.current();
     };
 
     audio.addEventListener('timeupdate', onTimeUpdate);
@@ -78,9 +89,8 @@ const MusicPlayer = ({ currentSong, onNext, onPrevious }: MusicPlayerProps) => {
       audio.removeEventListener('timeupdate', onTimeUpdate);
       audio.removeEventListener('ended', onEnded);
     };
-  }, [currentSong, onNext]);
+  }, [currentSong]);
 
-  // keep volume in sync without re-running the whole setup
   useEffect(() => {
     volumeRef.current = volume;
     if (audioRef.current) audioRef.current.volume = volume / 100;
@@ -163,7 +173,6 @@ const MusicPlayer = ({ currentSong, onNext, onPrevious }: MusicPlayerProps) => {
     >
       <Box sx={{ maxWidth: 1400, mx: 'auto' }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 3 }}>
-          {/* Song Info */}
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, minWidth: 200, flex: 1 }}>
             <Box
               sx={{
@@ -226,8 +235,6 @@ const MusicPlayer = ({ currentSong, onNext, onPrevious }: MusicPlayerProps) => {
               </Typography>
             </Box>
           </Box>
-
-          {/* Player Controls */}
           <Box sx={{ flex: 2, maxWidth: 600 }}>
             <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1, mb: 1 }}>
               <IconButton
@@ -297,8 +304,6 @@ const MusicPlayer = ({ currentSong, onNext, onPrevious }: MusicPlayerProps) => {
               </Typography>
             </Box>
           </Box>
-
-          {/* Volume Control */}
           <Box sx={{ display: { xs: 'none', md: 'flex' }, alignItems: 'center', gap: 1, minWidth: 150, flex: 1, justifyContent: 'flex-end' }}>
             <IconVolume size={20} color="hsl(var(--muted-foreground))" />
             <Slider

@@ -1,12 +1,13 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { Box, ThemeProvider, createTheme, CssBaseline } from "@mui/material";
 import { toast } from "sonner";
 import type { Song } from "../types/song";
-import { mockSongs } from "../data/mockSongs";
+import songService from "../services/songService";
+import uploadService from "../services/uploadService";
 import Navbar from "../components/Navbar";
 import SongList from "../components/SongList";
 import MusicPlayer from "../components/MusicPlayer";
-import { getDuration } from "../services/metadataService";
+
 
 const darkTheme = createTheme({
   palette: {
@@ -22,22 +23,23 @@ const darkTheme = createTheme({
 });
 
 const Index = () => {
-  const [songs, setSongs] = useState<Song[]>(mockSongs);
+  // only show songs returned by backend GET
+  const [remoteSongs, setRemoteSongs] = useState<Song[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [currentSong, setCurrentSong] = useState<Song | null>(null);
 
   const filteredSongs = useMemo(() => {
-    if (!searchQuery.trim()) return songs;
+    if (!searchQuery.trim()) return remoteSongs;
 
     const query = searchQuery.toLowerCase();
-    return songs.filter(
+    return remoteSongs.filter(
       (song) =>
         song.title.toLowerCase().includes(query) ||
         song.artist.toLowerCase().includes(query) ||
         song.album.toLowerCase().includes(query) ||
         song.genre.toLowerCase().includes(query)
     );
-  }, [songs, searchQuery]);
+  }, [remoteSongs, searchQuery]);
 
   const handleSearch = (query: string) => {
     setSearchQuery(query);
@@ -53,64 +55,58 @@ const Index = () => {
     duration?: number | null;
   };
 
-  async function handleFileListUpload(files: FileList) {
-    const newSongs: Song[] = [];
-    for (const [index, file] of Array.from(files).entries()) {
-      if (!file.type.startsWith("audio/")) continue;
-      try {
-        const duration = await getDuration(file);
-        const audioUrl = URL.createObjectURL(file);
-        const newSong: Song = {
-          id: `uploaded-${Date.now()}-${index}`,
-          title: file.name.replace(/\.[^/.]+$/, ""),
-          artist: "Artista Desconocido",
-          album: "Álbum Desconocido",
-          genre: "Desconocido",
-          duration: duration ? Math.round(duration) : 0,
-          audioUrl,
-        };
-        newSongs.push(newSong);
-      } catch (err) {
-        console.error("Error obteniendo duración:", err);
-      }
-    }
-    return newSongs;
-  }
+  // (file list upload is handled by uploadService.uploadFiles in production)
 
-  function handleUploadItems(items: UploadItem[]) {
-    const newSongs: Song[] = items
-      .filter((it) => it.file?.type?.startsWith("audio/"))
-      .map((it, idx) => ({
-        id: `uploaded-${Date.now()}-${idx}`,
-        title: it.title ?? it.file.name.replace(/\.[^/.]+$/, ""),
-        artist: it.artist ?? "Artista Desconocido",
-        album: it.album ?? "Álbum Desconocido",
-        genre: it.genre ?? "Desconocido",
-        duration: it.duration ? Math.round(it.duration) : 0,
-        coverUrl: it.coverFile ? URL.createObjectURL(it.coverFile) : undefined,
-        audioUrl: URL.createObjectURL(it.file),
-      }));
-    return newSongs;
-  }
+  // Note: we will only add uploaded songs to the UI if the backend returns them.
 
   const handleUpload = (input: FileList | UploadItem[] | null) => {
     if (!input) return;
     (async () => {
-      let newSongs: Song[] = [];
-      if ((input as FileList).item !== undefined) {
-        newSongs = await handleFileListUpload(input as FileList);
-      } else {
-        newSongs = handleUploadItems(input as UploadItem[]);
-      }
-
-      if (newSongs.length > 0) {
-        setSongs([...newSongs, ...songs]);
-        toast.success(`${newSongs.length} canción(es) agregada(s) exitosamente`);
-      } else {
-        toast.error("No se encontraron archivos de audio válidos");
+      try {
+        const res = await uploadService.uploadFiles(input as FileList | UploadItem[]);
+  if (res.success) {
+          // After a successful upload, refresh the full list from backend (authoritative)
+          try {
+            const fresh = await songService.fetchSongs();
+            setRemoteSongs(fresh);
+            const count = res.data ? res.data.length : 1;
+            toast.success(`${count} canción(es) agregada(s) exitosamente`);
+            return;
+          } catch {
+            // If fetching fresh list fails, fallback to inserting the returned items from upload
+            if (res.data && res.data.length > 0) {
+              setRemoteSongs((prev) => [...res.data!, ...prev]);
+              toast.success(`${res.data.length} canción(es) agregada(s) exitosamente (fallback)`);
+              return;
+            }
+            toast.success(`Subida completa pero no se pudo refrescar la lista`);
+            return;
+          }
+  }
+  // show backend/client error if provided
+  toast.error(res.error ?? "No se encontraron archivos de audio válidos o la subida falló");
+      } catch (err) {
+        console.error(err);
+        toast.error("Error subiendo canción(es)");
       }
     })();
   };
+
+  useEffect(() => {
+    // load songs from backend on mount; if it fails keep mockSongs
+    const controller = new AbortController();
+    (async () => {
+      try {
+        const remote = await songService.fetchSongs(controller.signal);
+        if (remote && remote.length > 0) setRemoteSongs(remote);
+      } catch (err) {
+        // leave remoteSongs empty; UI will show 'No se encontraron canciones'
+        console.warn('Could not fetch songs from backend', err);
+      }
+    })();
+
+    return () => controller.abort();
+  }, []);
 
   const handlePlaySong = (song: Song) => {
     setCurrentSong(song);

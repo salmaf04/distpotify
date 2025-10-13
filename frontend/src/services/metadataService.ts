@@ -5,11 +5,10 @@ type ExtractedMetadata = {
   album: string | null;
   genre: string | null;
   artist: string | null;
-  duration: number | null; // seconds
+  duration: number | null;
   coverFile?: File | null;
 };
 
-// New: only get duration (public helper)
 export async function getDuration(file: File): Promise<number | null> {
   try {
     const metadata = await parseBlob(file as Blob);
@@ -25,23 +24,20 @@ async function blobToFile(blob: Blob, fileName: string, mimeType?: string): Prom
 }
 
 function normalizePictureData(data: unknown): ArrayBuffer {
-  // Convert many possible buffer-like inputs to a plain ArrayBuffer copy
   if (data instanceof ArrayBuffer) {
-    // copy to ensure it's a standalone ArrayBuffer (and not SharedArrayBuffer)
     const copy = new ArrayBuffer(data.byteLength);
     new Uint8Array(copy).set(new Uint8Array(data));
     return copy;
   }
 
   if (ArrayBuffer.isView(data)) {
-    const view = data as ArrayBufferView;
+    const view = data ;
     const copy = new ArrayBuffer(view.byteLength);
     new Uint8Array(copy).set(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
     return copy;
   }
 
   if (typeof data === 'object' && data !== null) {
-    // try iterable/array-like of numbers
     try {
       const arr = Array.from(data as Iterable<number>);
       const copy = new ArrayBuffer(arr.length);
@@ -197,18 +193,14 @@ async function getAudioDurationFromBlob(file: File): Promise<number | null> {
   });
 }
 
-// Build FormData ready for a multipart/form-data POST
 export async function buildUploadFormData(file: File, extraFields?: Record<string, string | Blob>): Promise<FormData> {
   const duration = await getDuration(file);
 
   const form = new FormData();
-  // The server expects the client to optionally provide title/album/artist/genre; do not auto-fill them here.
   if (duration !== null && duration !== undefined) form.append('duration', String(Math.round(duration)));
 
-  // Append the original audio file
   form.append('audio', file, file.name);
 
-  // Append any extra fields passed by caller
   if (extraFields) {
     for (const [k, v] of Object.entries(extraFields)) {
       form.append(k, v as Blob | string);

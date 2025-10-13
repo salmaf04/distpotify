@@ -10,10 +10,16 @@ import (
 )
 
 func SaveFile(c *fiber.Ctx, file *multipart.FileHeader, artist string, title string) (string, error) {
-    filename := fmt.Sprintf("%s-%s.mp3", artist, title)
-    filepath := filepath.Join("./storage/songs/", filename)
+    // asegurar directorio de destino
+    dir := filepath.Join(".", "storage", "songs")
+    if err := os.MkdirAll(dir, 0o755); err != nil {
+        return "", fmt.Errorf("error creando directorio destino: %v", err)
+    }
 
-    dst, err := os.Create(filepath)
+    filename := fmt.Sprintf("%s-%s.mp3", artist, title)
+    destPath := filepath.Join(dir, filename)
+
+    dst, err := os.Create(destPath)
     if err != nil {
         return "", fmt.Errorf("error al guardar archivo: %v", err)
     }
@@ -29,5 +35,5 @@ func SaveFile(c *fiber.Ctx, file *multipart.FileHeader, artist string, title str
         return "", fmt.Errorf("error al copiar archivo: %v", err)
     }
 
-    return filepath, nil
+    return destPath, nil
 }
