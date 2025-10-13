@@ -1,0 +1,74 @@
+version: '3.8'
+
+services:
+  database:
+    image: postgres:13
+    environment:
+      POSTGRES_DB: spotify
+      POSTGRES_USER: local
+      POSTGRES_PASSWORD: local
+    ports:
+      - target: 5432
+        published: 5434
+        protocol: tcp
+        mode: host
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U local -d spotify"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - app-network
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
+  backend:
+    image: be:latest
+    ports:
+      - target: 3003
+        published: 3003
+        protocol: tcp
+        mode: host
+    environment:
+      DB_HOST: database
+      DB_PORT: 5432
+      DB_NAME: spotify
+      DB_USER: local
+      DB_PASSWORD: local
+      NODE_ENV: production
+    depends_on:
+      - database
+    networks:
+      - app-network
+    deploy:
+      replicas: 2
+      placement:
+        constraints:
+          - node.role == worker
+      update_config:
+        parallelism: 1
+        delay: 10s
+      restart_policy:
+        condition: on-failure
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+
+networks:
+  app-network:
+    driver: overlay
+    attachable: true
+
+volumes:
+  db_data:
+    driver: local

@@ -1,16 +1,16 @@
-FROM node:18-alpine
+FROM node:18-alpine 
 
-RUN corepack enable && corepack prepare pnpm@latest --activate
+RUN npm install -g pnpm@9.15.4  
 
 WORKDIR /app
 
 COPY package*.json ./
-COPY pnpm-lock.yaml* ./
+COPY pnpm-lock.yaml ./
 
 RUN pnpm install --frozen-lockfile
 
 COPY . .
 
-EXPOSE 5173
+EXPOSE 3000
 
-CMD ["pnpm", "dev", "--host"]
+CMD ["pnpm", "dev"] 

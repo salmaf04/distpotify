@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  frontend:
+    image: fe:latest
+    ports:
+      - target: 5173
+        published: 5173
+        protocol: tcp
+        mode: host
+    environment:
+      - VITE_API_URL=http://backend:3003
+    networks:
+      - app-network
+    deploy:
+      replicas: 2
+      placement:
+        constraints:
+          - node.role == manager
+      update_config:
+        parallelism: 1
+        delay: 10s
+      restart_policy:
+        condition: on-failure
+
+networks:
+  app-network:
+    external: true
+    name: app-network

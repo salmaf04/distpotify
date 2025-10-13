@@ -1,22 +1,44 @@
-# docker-compose.full.yml  
 version: '3.8'
 
 services:
   frontend:
     image: fe:latest
     ports:
-      - "80:3000"
+      - "80:80"
+    environment:
+      - VITE_API_URL=http://backend:3003
     networks:
-      - full-network
+      - app-network
+    deploy:
+      replicas: 2
+      placement:
+        constraints:
+          - node.role == manager
+      update_config:
+        parallelism: 1
+        delay: 10s
+      restart_policy:
+        condition: on-failure
 
   backend:
     image: be:latest
+    ports:
+      - "3003:3003"
     environment:
-      - DATABASE_URL=postgresql://local:local@database:5432/spotify
-    depends_on:
-      - database
+      - NODE_ENV=production
+      - DB_HOST=database
     networks:
-      - full-network
+      - app-network
+    deploy:
+      replicas: 3
+      placement:
+        constraints:
+          - node.role == worker
+      update_config:
+        parallelism: 2
+        delay: 10s
+      restart_policy:
+        condition: on-failure
 
   database:
     image: postgres:13
@@ -27,11 +49,17 @@ services:
     volumes:
       - db_data:/var/lib/postgresql/data
     networks:
-      - full-network
+      - app-network
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: on-failure
+
+networks:
+  app-network:
+    driver: overlay
 
 volumes:
   db_data:
-
-networks:
-  full-network:
-    driver: bridge
