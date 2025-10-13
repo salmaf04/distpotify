@@ -1,0 +1,37 @@
+# docker-compose.full.yml  
+version: '3.8'
+
+services:
+  frontend:
+    image: fe:latest
+    ports:
+      - "80:3000"
+    networks:
+      - full-network
+
+  backend:
+    image: be:latest
+    environment:
+      - DATABASE_URL=postgresql://local:local@database:5432/spotify
+    depends_on:
+      - database
+    networks:
+      - full-network
+
+  database:
+    image: postgres:13
+    environment:
+      - POSTGRES_DB=spotify
+      - POSTGRES_USER=local
+      - POSTGRES_PASSWORD=local
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    networks:
+      - full-network
+
+volumes:
+  db_data:
+
+networks:
+  full-network:
+    driver: bridge
