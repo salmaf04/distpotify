@@ -11,14 +11,22 @@ services:
     - "5435:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U local -d spotify"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
       - app-network
     deploy:
       placement:
         constraints:
           - node.role == manager 
+      replicas: 1
 
   backend:
-    image: 192.168.1.106:5000/be:latest
+    image: be:latest
     ports:
       - "3003:3003"
     environment:
@@ -35,15 +43,21 @@ services:
       placement:
         constraints:
           - node.role == manager 
+      update_config:
+        parallelism: 1
+        delay: 10s
+      restart_policy:
+        condition: on-failure
     depends_on:
       - database
 
   frontend:
-    image: 192.168.1.106:5000/fe:latest
+    image: fe:latest
     ports :
       - "5173:5173"
+    command: ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
     environment:
-      - VITE_API_URL=http://192.168.1.106:3003
+      - VITE_API_URL=http://172.20.10.4:172:17:3003
     networks:
       - app-network
     deploy:
@@ -51,10 +65,16 @@ services:
       placement:
         constraints:
           - node.role == worker  
+      update_config:
+        parallelism: 1
+        delay: 10s
+      restart_policy:
+        condition: on-failure
 
 networks:
   app-network:
     driver: overlay
+    attachable: true
 
 volumes:
   db_data:
