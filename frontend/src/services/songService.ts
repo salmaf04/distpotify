@@ -13,7 +13,7 @@ function parseDurationToSeconds(d?: string): number {
 }
 
 async function fetchSongs(signal?: AbortSignal): Promise<Song[]> {
-  const API_BASE = (import.meta.env.VITE_API_BASE as string) ?? '';
+  const API_BASE = import.meta.env.VITE_API_URL
   const base = API_BASE.replace(/\/$/, '');
   const url = base ? `${base}/api/songs` : '/api/songs';
 

@@ -64,7 +64,7 @@ async function uploadFiles(
       mapUploadItemToFormData(form, item);
 
   const xhr = new XMLHttpRequest();
-  const API_BASE = (import.meta.env.VITE_API_BASE as string) ?? '';
+  const API_BASE = import.meta.env.VITE_API_URL;
   const base = API_BASE.replace(/\/$/, '');
   const url = base ? `${base}/api/songs/upload` : '/api/songs/upload';
 

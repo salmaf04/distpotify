@@ -8,35 +8,21 @@ services:
       POSTGRES_USER: local
       POSTGRES_PASSWORD: local
     ports:
-      - target: 5432
-        published: 5434
-        protocol: tcp
-        mode: host
+    - "5435:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U local -d spotify"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-      start_period: 10s
-    networks:
       - app-network
     deploy:
       placement:
         constraints:
           - node.role == manager 
-      replicas: 1
 
   backend:
     image: 192.168.1.106:5000/be:latest
     ports:
-      - target: 3003
-        published: 3003
-        protocol: tcp
-        mode: host
+      - "3003:3003"
     environment:
-      DB_HOST: database
+      DB_HOST: database  
       DB_PORT: 5432
       DB_NAME: spotify
       DB_USER: local
@@ -45,37 +31,26 @@ services:
     networks:
       - app-network
     deploy:
-      replicas: 2
+      replicas: 1
       placement:
         constraints:
           - node.role == manager 
-      update_config:
-        parallelism: 1
-        delay: 10s
-      restart_policy:
-        condition: on-failure
+    depends_on:
+      - database
 
   frontend:
     image: 192.168.1.106:5000/fe:latest
-    ports:
-      - target: 5173
-        published: 5173
-        protocol: tcp
-        mode: host
+    ports :
+      - "5173:5173"
     environment:
-      - VITE_API_URL=http://backend:3003
+      - VITE_API_URL=http://192.168.1.106:3003
     networks:
       - app-network
     deploy:
-      replicas: 2
+      replicas: 1
       placement:
         constraints:
           - node.role == worker  
-      update_config:
-        parallelism: 1
-        delay: 10s
-      restart_policy:
-        condition: on-failure
 
 networks:
   app-network:
