@@ -3,6 +3,8 @@ package raft
 import (
 	"sync"
 	"time"
+
+	"github.com/gofiber/fiber/v2"
 )
 
 type LogEntry struct {
@@ -60,4 +62,12 @@ type RaftNode struct {
 	// Canales para comunicación
 	appendEntriesChan chan AppendEntriesReq
 	requestVoteChan   chan RequestVoteReq
+}
+
+func (myRaft *RaftNode) leaderCheckHandler(c *fiber.Ctx) error {
+	if myRaft.state == Leader {
+		c.Status(200)
+		return c.SendString("ok")
+	}
+	return c.SendStatus(503) // o 404, da igual
 }

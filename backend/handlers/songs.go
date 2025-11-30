@@ -154,20 +154,19 @@ func (h *SongHandler) GetAllSongs(c *fiber.Ctx) error {
 	return c.JSON(response)
 }
 
-// Función auxiliar para obtener rutas correctas
 func getStoragePath(filename string) string {
-	// Si ya es una ruta absoluta, devolverla tal cual
+	// Si ya es una ruta absoluta, usarla tal cual
 	if filepath.IsAbs(filename) {
 		return filename
 	}
 
-	// Si la ruta ya incluye "storage/", usarla tal cual
+	// Si la ruta ya incluye "storage/", construir desde el directorio de trabajo
 	if strings.Contains(filename, "storage/") || strings.Contains(filename, "storage\\") {
-		return filename
+		return filepath.Join(".", filename)
 	}
 
-	// Construir ruta desde el directorio base
-	return filepath.Join("..", "storage", "songs", filepath.Base(filename))
+	// Construir ruta desde el directorio storage
+	return filepath.Join("storage", "songs", filepath.Base(filename))
 }
 
 func (h *SongHandler) GetSongByID(c *fiber.Ctx) error {

@@ -11,6 +11,7 @@ import (
 	"distributed-systems-project/database"
 	"distributed-systems-project/handlers"
 	"distributed-systems-project/models"
+	"distributed-systems-project/raft"
 )
 
 func main() {
@@ -43,6 +44,8 @@ func main() {
 	app.Get("/api/songs/:id", SongHandler.GetSongByID)
 	app.Get("/api/songs/search", SongHandler.GetSongsSearch)
 	app.Post("/api/songs/upload", SongHandler.UploadSong)
+
+	app.Get("/_raft_leader", raft.LeaderCheckHandler)
 
 	// Alinear rutas estáticas con directorios reales
 	app.Static("/music", "./storage/songs")

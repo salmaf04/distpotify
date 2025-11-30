@@ -3,6 +3,7 @@ package utils
 import (
 	"fmt"
 	"io"
+	"log"
 	"mime/multipart"
 	"os"
 	"path/filepath"
@@ -13,21 +14,20 @@ import (
 )
 
 func SaveFile(c *fiber.Ctx, file *multipart.FileHeader, artist string, title string) (string, error) {
-	// Subir un nivel desde utils y entrar a storage/songs
-	dir := filepath.Join("..", "storage", "songs")
+	// Usar ruta relativa dentro del contenedor
+	dir := filepath.Join("storage", "songs")
 
-	// Obtener la ruta absoluta para mejor control
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
 		return "", fmt.Errorf("error obteniendo ruta absoluta: %v", err)
 	}
 
-	// Asegurar directorio de destino
-	if err := os.MkdirAll(absDir, 0o755); err != nil {
+	log.Printf("Guardando archivo en: %s", absDir)
+
+	if err := os.MkdirAll(absDir, 0755); err != nil {
 		return "", fmt.Errorf("error creando directorio destino: %v", err)
 	}
 
-	// Sanitizar nombres de archivo (recomendado)
 	safeArtist := sanitizeFileName(artist)
 	safeTitle := sanitizeFileName(title)
 
@@ -50,15 +50,15 @@ func SaveFile(c *fiber.Ctx, file *multipart.FileHeader, artist string, title str
 		return "", fmt.Errorf("error al copiar archivo: %v", err)
 	}
 
-	return destPath, nil
+	// Guardar ruta relativa en la BD para que sea consistente
+	relativePath := filepath.Join("songs", filename)
+
+	return relativePath, nil
 }
 
-// Función auxiliar para sanitizar nombres de archivo
 func sanitizeFileName(name string) string {
-	// Remover o reemplazar caracteres problemáticos
 	reg := regexp.MustCompile(`[<>:"/\\|?*]`)
 	safe := reg.ReplaceAllString(name, "_")
-	// Limitar longitud si es necesario
 	if len(safe) > 100 {
 		safe = safe[:100]
 	}
