@@ -147,16 +147,9 @@ func (s *Server) syncHandler(c *fiber.Ctx) error {
 
 	// Procesar sincronización
 	for _, song := range req.Songs {
+		song.ID = 0
 		// Usar Upsert (crear o actualizar)
-		result := s.db.Where(models.Song{Title: song.Title, Artist: song.Artist}).
-			Assign(models.Song{
-				Album:    song.Album,
-				Genre:    song.Genre,
-				Duration: song.Duration,
-				File:     song.File,
-				Cover:    song.Cover,
-			}).
-			FirstOrCreate(&song)
+		result := s.db.Create(&song)
 
 		if result.Error != nil {
 			log.Printf("Error sincronizando canción %s: %v", song.Title, result.Error)

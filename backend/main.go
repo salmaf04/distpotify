@@ -406,7 +406,7 @@ func (s *Server) clusterHandler(c *fiber.Ctx) error {
 
 func (s *Server) syncNewSongToFollowers(song *structs.SongInputModel) {
 	// Sincronizar nueva canción inmediatamente
-	log.Printf("Sincronizando nueva canción con followers")
+	log.Printf("Sincronizando nueva canción con followers SIUUUU")
 
 	var cover string
 	if song.Cover != nil {
@@ -425,6 +425,8 @@ func (s *Server) syncNewSongToFollowers(song *structs.SongInputModel) {
 		File:     song.File,
 		Cover:    cover,
 	}
+
+	fmt.Printf("Estes es el id : %d", newSong.ID)
 
 	// Enviar a followers
 	for nodeID := 1; nodeID <= 3; nodeID++ {
