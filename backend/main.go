@@ -133,9 +133,8 @@ func NewServer(nodeID, apiPort int) *Server {
 	}
 
 	server.setupRoutes()
-	go server.leaderElectionSimulation()
+	go server.bootstrapLeadership()
 	go server.startHeartbeatMonitor()
-
 	go server.initialSyncAfterJoin()
 
 	return server
@@ -162,27 +161,6 @@ func (s *Server) setupRoutes() {
 
 	// Sincronización (para uso interno)
 	s.app.Post("/internal/sync", s.syncHandler)
-
-	// Forzar elección (testing)
-	s.app.Post("/election/force", func(c *fiber.Ctx) error {
-		if !s.isLeader {
-			// Simular inicio de elección
-			s.mu.Lock()
-			s.leaderID = -1
-			s.mu.Unlock()
-
-			go s.leaderElectionSimulation()
-
-			return c.JSON(fiber.Map{
-				"message": "Elección forzada iniciada",
-				"node_id": s.nodeID,
-			})
-		}
-		return c.JSON(fiber.Map{
-			"message": "Ya soy el líder",
-			"node_id": s.nodeID,
-		})
-	})
 }
 
 func (s *Server) electionHandler(c *fiber.Ctx) error {

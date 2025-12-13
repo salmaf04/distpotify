@@ -113,36 +113,17 @@ func (s *Server) broadcastCoordinator() {
 	}
 }
 
-func (s *Server) leaderElectionSimulation() {
-	time.Sleep(5 * time.Second)
-
-	// En una implementación real, usarías el algoritmo Bully
-	// Aquí simulamos que el nodo 1 es el líder
-	if s.nodeID == 1 {
+func (s *Server) bootstrapLeadership() {
+	time.Sleep(1 * time.Second) // dar tiempo a que otros arranquen
+	leaderID := s.discoverLeaderByScanning()
+	if leaderID > 0 {
 		s.mu.Lock()
-		s.isLeader = true
-		s.leaderID = s.nodeID
+		s.leaderID = leaderID
+		s.isLeader = (s.nodeID == leaderID)
 		s.mu.Unlock()
-		log.Printf("Nodo %d se declara líder", s.nodeID)
-	} else {
-		s.mu.Lock()
-		s.leaderID = 1
-		s.mu.Unlock()
+		log.Printf("Nodo %d detecta líder %d al unirse", s.nodeID, leaderID)
+		return
 	}
-
-	// Heartbeat para líder
-	go func() {
-		ticker := time.NewTicker(10 * time.Second)
-		defer ticker.Stop()
-
-		for range ticker.C {
-			s.mu.RLock()
-			isLeader := s.isLeader
-			s.mu.RUnlock()
-
-			if isLeader {
-				log.Printf("Líder %d activo - Heartbeat", s.nodeID)
-			}
-		}
-	}()
+	log.Printf("Nodo %d no encuentra líder, lanza elección Bully", s.nodeID)
+	s.startLeaderElection()
 }

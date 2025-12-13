@@ -245,6 +245,8 @@ func (rp *ReverseProxy) getRandomBackend() (*BackendNode, bool) {
 
 func (rp *ReverseProxy) createProxyHandler() fiber.Handler {
 	return func(c *fiber.Ctx) error {
+		fmt.Printf("Entrando al proxy SIUU")
+
 		// Determinar a qué backend redirigir
 		var targetBackend *BackendNode
 		var found bool
