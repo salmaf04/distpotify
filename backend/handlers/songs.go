@@ -41,6 +41,8 @@ func (h *SongHandler) InsertSong(c *fiber.Ctx, songInput *structs.SongInputModel
 		Cover:    songInputCover,
 	}
 
+	song.ID = 0
+
 	// Timeout para evitar cuelgues si la DB está lenta/caída
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
