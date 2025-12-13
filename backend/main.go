@@ -360,6 +360,8 @@ func (s *Server) healthHandler(c *fiber.Ctx) error {
 		dbOK = false
 	}
 
+	log.Printf("SE esta contactando mediante health")
+
 	return c.JSON(fiber.Map{
 		"status":    "healthy",
 		"node_id":   s.nodeID,

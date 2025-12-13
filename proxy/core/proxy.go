@@ -50,14 +50,14 @@ func NewReverseProxy(serviceName string, port int) *ReverseProxy {
 
 	backendURLs := []string{
 		"http://backend1:8080",
-		"http://backend2:8080",
-		"http://backend3:8080",
+		"http://backend2:8081",
+		"http://backend3:8082",
 	}
 
 	for _, endpoint := range backendURLs {
 		backend := &BackendNode{
 			URL:       endpoint,
-			IsAlive:   true,
+			IsAlive:   false,
 			IsLeader:  false, // luego el proxy detectará líder consultando /cluster
 			ID:        rp.nextID,
 			IP:        "", // opcional
@@ -97,6 +97,8 @@ func (rp *ReverseProxy) startHealthChecks() {
 func (rp *ReverseProxy) checkAllBackends() {
 	var wg sync.WaitGroup
 
+	log.Printf("Chequeando todos los backends")
+
 	rp.mu.RLock()
 	backends := make([]*BackendNode, 0, len(rp.backends))
 	for _, backend := range rp.backends {
@@ -120,6 +122,8 @@ func (rp *ReverseProxy) checkAllBackends() {
 }
 
 func (rp *ReverseProxy) isBackendAlive(url string) bool {
+	log.Printf("Preguntando por los backends quien esta vivo")
+
 	req := fasthttp.AcquireRequest()
 	defer fasthttp.ReleaseRequest(req)
 
@@ -131,8 +135,11 @@ func (rp *ReverseProxy) isBackendAlive(url string) bool {
 
 	err := rp.client.DoTimeout(req, resp, 3*time.Second)
 	if err != nil {
+		log.Printf("Esto dio error %v", err)
 		return false
 	}
+
+	log.Printf("Status Code: %d", resp.StatusCode())
 
 	return resp.StatusCode() == fiber.StatusOK
 }
@@ -210,6 +217,8 @@ func (rp *ReverseProxy) getLeaderBackend() (*BackendNode, bool) {
 	rp.mu.RLock()
 	defer rp.mu.RUnlock()
 
+	log.Printf("Este es mi actual lider %d y lo tengo en status %v", rp.leaderID, rp.backends[rp.leaderID])
+
 	if backend, exists := rp.backends[rp.leaderID]; exists {
 		backend.mu.RLock()
 		defer backend.mu.RUnlock()
@@ -245,7 +254,7 @@ func (rp *ReverseProxy) getRandomBackend() (*BackendNode, bool) {
 
 func (rp *ReverseProxy) createProxyHandler() fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		fmt.Printf("Entrando al proxy SIUU")
+		log.Printf("Entrando al proxy - Request: %s %s", c.Method(), c.Path())
 
 		// Determinar a qué backend redirigir
 		var targetBackend *BackendNode
@@ -264,6 +273,7 @@ func (rp *ReverseProxy) createProxyHandler() fiber.Handler {
 				// Intentar encontrar cualquier backend vivo
 				targetBackend, found = rp.getRandomBackend()
 				if !found {
+					log.Printf("Lider No encontrado")
 					return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
 						"error":  "No hay backends disponibles",
 						"action": "try_again_later",
@@ -273,6 +283,8 @@ func (rp *ReverseProxy) createProxyHandler() fiber.Handler {
 				log.Printf("[PROXY WARNING] Escritura en no-líder %d (no hay líder disponible)",
 					targetBackend.ID)
 			}
+
+			log.Printf("Lider encontrado %d", targetBackend.ID)
 		} else {
 			// Para lecturas, usar cualquier backend vivo
 			targetBackend, found = rp.getRandomBackend()
