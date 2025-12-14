@@ -22,7 +22,7 @@ func (s *Server) discoverLeaderByScanning() int {
 	client := &http.Client{Timeout: 2 * time.Second}
 
 	// Resolver todas las IPs de las tareas/replicas usando el DNS interno de Swarm
-	taskHost := "tasks." + serviceName
+	taskHost := serviceName
 	addrs, err := net.LookupHost(taskHost)
 	if err != nil {
 		log.Printf("Nodo %d no pudo resolver DNS para %s: %v", s.nodeID, taskHost, err)

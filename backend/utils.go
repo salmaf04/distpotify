@@ -13,11 +13,11 @@ import (
 func (s *Server) getAllNodeIDs() []int {
 	const serviceName = "backend" // Cambia si tu servicio tiene otro nombre
 	const clusterPath = "/cluster"
-	const listenPort = 8080
+	const listenPort = 3003
 
 	client := &http.Client{Timeout: 2 * time.Second}
 
-	taskHost := "tasks." + serviceName
+	taskHost := serviceName
 	addrs, err := net.LookupHost(taskHost)
 	if err != nil || len(addrs) == 0 {
 		log.Printf("Nodo %d no pudo resolver tareas de %s para obtener nodeIDs", s.nodeID, taskHost)
