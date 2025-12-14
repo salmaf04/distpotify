@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"distributed-systems-project/handlers"
+	"distributed-systems-project/middleware"
 	"distributed-systems-project/models"
 	"distributed-systems-project/structs"
 
@@ -32,6 +33,7 @@ type Server struct {
 	leaderID         int
 	mu               sync.RWMutex
 	songHandler      *handlers.SongHandler
+	authHandler      *handlers.AuthHandler
 	opLog            *OpLog // Nuevo
 	lastAppliedIndex int64
 }
@@ -49,8 +51,6 @@ type ElectionMessage struct {
 }
 
 func (s *Server) nodeURL(nodeID int) string {
-	// Usamos el nombre específico del contenedor (backend1, backend2...)
-	// Y el puerto interno ESTÁNDAR (3003) definido en tus Dockerfiles/Docker run
 	return fmt.Sprintf("http://backend%d:3003", nodeID)
 }
 
@@ -104,6 +104,7 @@ func NewServer(nodeID, apiPort int) *Server {
 
 	// Crear handler de canciones
 	songHandler := &handlers.SongHandler{DB: gormDB}
+	authHandler := &handlers.AuthHandler{DB: gormDB}
 
 	// Crear app Fiber
 	app := fiber.New(fiber.Config{
@@ -132,6 +133,7 @@ func NewServer(nodeID, apiPort int) *Server {
 		isLeader:         false,
 		leaderID:         0,
 		songHandler:      songHandler,
+		authHandler:      authHandler,
 		opLog:            NewOpLog(1000), // Tamaño máximo del OpLog
 		lastAppliedIndex: 0,
 	}
@@ -152,9 +154,13 @@ func (s *Server) setupRoutes() {
 	// API de canciones
 	api := s.app.Group("/api")
 
+	s.app.Post("/auth/register", s.authHandler.Register)
+	s.app.Post("/auth/login", s.authHandler.Login)
+
 	// Rutas de canciones con redirección automática
-	api.Post("/songs/upload", s.uploadSongHandler) // Solo líder
-	api.Post("/songs", s.createSongHandler)        // Solo líder
+	api.Post("/songs/upload", middleware.Protected(), middleware.AdminOnly(), s.uploadSongHandler)
+	api.Post("/songs", middleware.Protected(), middleware.AdminOnly(), s.createSongHandler)
+
 	api.Get("/songs", s.getSongsHandler)           // Cualquier réplica
 	api.Get("/songs/:id", s.getSongByIDHandler)    // Cualquier réplica
 	api.Get("/songs/search", s.searchSongsHandler) // Cualquier réplica
@@ -262,8 +268,7 @@ func (s *Server) uploadSongHandler(c *fiber.Ctx) error {
 	if !isLeader {
 		// Redirigir al líder
 		return c.Status(fiber.StatusTemporaryRedirect).JSON(fiber.Map{
-			"error": "No soy el líder para operaciones de escritura",
-			// Ahora (Puerto interno fijo 3003)
+			"error":        "No soy el líder para operaciones de escritura",
 			"redirect_to":  fmt.Sprintf("http://backend%d:3003/api/songs/upload", leaderID),
 			"current_node": s.nodeID,
 			"leader":       leaderID,
@@ -347,15 +352,10 @@ func (s *Server) createSongHandler(c *fiber.Ctx) error {
 		newSong.ID = 0
 		s.opLog.Append(OpCreate, newSong)
 
-		// NUEVO: Replicación semi-síncrona (esperar ACKs)
-		// Requerir al menos 1 ACK si hay más nodos, o 0 si estoy solo
-		// Ajustado a 2 según requerimiento, pero la función ajusta automáticamente si hay menos nodos
 		success := s.replicateToFollowers(newSong, 2)
 
 		if !success {
 			log.Printf("ADVERTENCIA: No se alcanzó el quórum de replicación deseado")
-			// Opcional: Podrías retornar error 500 o 202 Accepted indicando riesgo
-			// Por ahora seguimos retornando 201 pero con log de advertencia
 		}
 	}
 

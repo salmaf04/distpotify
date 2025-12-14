@@ -10,9 +10,9 @@ import (
 )
 
 func (s *Server) discoverLeaderByScanning() int {
-	const serviceName = "backend" // Nombre del servicio en Docker Swarm (ajustar si es diferente, e.g. "myapp_backend")
+	const serviceName = "backend"
 	const clusterPath = "/cluster"
-	const listenPort = 3003 // Puerto en el que escucha el contenedor (target port)
+	const listenPort = 3003
 
 	type clusterResp struct {
 		NodeID   int  `json:"node_id"`
@@ -36,9 +36,6 @@ func (s *Server) discoverLeaderByScanning() int {
 
 	// Escanear cada IP encontrada (excluyendo la propia si es necesario)
 	for _, ip := range addrs {
-		// Opcional: excluir la propia IP (aunque el nodo mismo podría ser líder)
-		// if ip == s.myOwnIP { continue }
-
 		url := fmt.Sprintf("http://%s:%d%s", ip, listenPort, clusterPath)
 
 		resp, err := client.Get(url)

@@ -290,9 +290,6 @@ func (s *Server) replicateToFollowers(song models.Song, minAcks int) bool {
 		go func(id int) {
 			defer wg.Done()
 
-			// Reutilizamos la lógica de envío pero necesitamos saber si fue exitoso
-			// sendSongToNode no retorna bool, así que implementamos una versión inline simplificada
-
 			type SyncRequest struct {
 				Songs  []models.Song `json:"songs"`
 				NodeID int           `json:"node_id"`
