@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +33,12 @@ type ReverseProxy struct {
 	nextID       int
 }
 
+const (
+	backendServiceName = "backend" // Nombre exacto del servicio en docker-compose/stack
+	backendPort        = 3003      // Puerto interno del contenedor (target port)
+	discoveryInterval  = 15 * time.Second
+)
+
 func NewReverseProxy(serviceName string, port int) *ReverseProxy {
 	// Crear service discovery
 	rp := &ReverseProxy{
@@ -48,39 +55,83 @@ func NewReverseProxy(serviceName string, port int) *ReverseProxy {
 		nextID: 1,
 	}
 
-	backendURLs := []string{
-		"http://backend1:8080",
-		"http://backend2:8081",
-		"http://backend3:8082",
-	}
+	rp.discoverBackends()
 
-	for _, endpoint := range backendURLs {
-		backend := &BackendNode{
-			URL:       endpoint,
-			IsAlive:   false,
-			IsLeader:  false, // luego el proxy detectará líder consultando /cluster
-			ID:        rp.nextID,
-			IP:        "", // opcional
-			LastCheck: time.Now(),
-		}
-		rp.backends[rp.nextID] = backend
-		rp.backendByURL[endpoint] = backend
-		rp.nextID++
-	}
-
-	// Iniciar discovery
-	//rp.discovery.Start()
-
-	// Iniciar health checks
+	// Health checks periódicos
 	go rp.startHealthChecks()
 
-	// Iniciar discovery sync
-	//go rp.syncDiscoveredServices()
+	// Descubrimiento periódico (para nuevas réplicas)
+	go func() {
+		ticker := time.NewTicker(discoveryInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			rp.discoverBackends()
+			rp.discoverLeader() // también actualizamos líder
+		}
+	}()
 
-	// Descubrir líder inicial+
+	// Descubrir líder inicial
 	go rp.discoverLeader()
 
 	return rp
+}
+
+func (rp *ReverseProxy) discoverBackends() {
+	taskHost := backendServiceName
+	addrs, err := net.LookupHost(taskHost)
+	if err != nil || len(addrs) == 0 {
+		log.Printf("[PROXY] No se pudieron resolver tareas de %s: %v", taskHost, err)
+		return
+	}
+
+	log.Printf("[PROXY] Descubiertas %d réplicas via DNS: %v", len(addrs), addrs)
+
+	rp.mu.Lock()
+	defer rp.mu.Unlock()
+
+	// Marcar todos como posiblemente obsoletos
+	for _, b := range rp.backends {
+		b.mu.Lock()
+		b.IsAlive = false // los volveremos a validar en health check
+		b.mu.Unlock()
+	}
+
+	// Mapa temporal de URLs actuales descubiertas
+	currentURLs := make(map[string]bool)
+	for _, ip := range addrs {
+		url := fmt.Sprintf("http://%s:%d", ip, backendPort)
+		currentURLs[url] = true
+
+		// Si ya existe, continuar
+		if existing, ok := rp.backendByURL[url]; ok {
+			// Actualizar estado (se validará en health check)
+			existing.mu.Lock()
+			existing.LastCheck = time.Now()
+			existing.mu.Unlock()
+			continue
+		}
+
+		// Nuevo backend descubierto → añadirlo
+		newID := rp.nextID
+		rp.nextID++
+
+		newBackend := &BackendNode{
+			URL:       url,
+			IsAlive:   false, // se comprobará en el próximo health check
+			IsLeader:  false,
+			ID:        newID,
+			IP:        ip,
+			LastCheck: time.Now(),
+		}
+
+		rp.backends[newID] = newBackend
+		rp.backendByURL[url] = newBackend
+
+		log.Printf("[PROXY] Nueva réplica descubierta y añadida: ID %d → %s", newID, url)
+	}
+
+	// Opcional: eliminar backends que ya no existen (después de un tiempo)
+	// Por ahora los mantenemos pero marcados como !IsAlive
 }
 
 func (rp *ReverseProxy) startHealthChecks() {
@@ -144,41 +195,78 @@ func (rp *ReverseProxy) isBackendAlive(url string) bool {
 	return resp.StatusCode() == fiber.StatusOK
 }
 
+type clusterResponse struct {
+	NodeID   int  `json:"node_id"`
+	IsLeader bool `json:"is_leader"`
+}
+
+func (rp *ReverseProxy) getClusterInfo(url string) (int, bool, error) {
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	req.SetRequestURI(url + "/cluster")
+	req.Header.SetMethod("GET")
+
+	if err := rp.client.DoTimeout(req, resp, 3*time.Second); err != nil {
+		return 0, false, err
+	}
+
+	if resp.StatusCode() != 200 {
+		return 0, false, fmt.Errorf("status %d", resp.StatusCode())
+	}
+
+	var cr clusterResponse
+	if err := json.Unmarshal(resp.Body(), &cr); err != nil {
+		return 0, false, err
+	}
+
+	return cr.NodeID, cr.IsLeader, nil
+}
+
 func (rp *ReverseProxy) discoverLeader() {
 	rp.mu.RLock()
 	backends := make([]*BackendNode, 0, len(rp.backends))
-	for _, backend := range rp.backends {
-		backends = append(backends, backend)
+	for _, b := range rp.backends {
+		backends = append(backends, b)
 	}
 	rp.mu.RUnlock()
 
-	currentLeaderID := -1
-	var currentLeader *BackendNode
+	var newLeaderID int = 0
 
-	// Buscar líder actual
 	for _, backend := range backends {
-		if rp.isBackendAlive(backend.URL) && rp.checkIfLeader(backend.URL) {
-			currentLeaderID = backend.ID
-			currentLeader = backend
+		nodeID, isLeader, err := rp.getClusterInfo(backend.URL)
+		if err != nil {
+			continue
+		}
+
+		// Actualizar el ID real del backend (importante para consistencia)
+		backend.mu.Lock()
+		backend.ID = nodeID // ¡Ahora usamos el node_id real del backend!
+		backend.mu.Unlock()
+
+		if isLeader {
+			newLeaderID = nodeID
 			break
 		}
 	}
 
-	// Si encontramos un líder diferente, actualizar
-	if currentLeaderID > 0 && currentLeaderID != rp.leaderID {
+	if newLeaderID > 0 && newLeaderID != rp.leaderID {
 		rp.mu.Lock()
-		rp.leaderID = currentLeaderID
+		oldLeader := rp.leaderID
+		rp.leaderID = newLeaderID
 
-		// Actualizar todos los backends
-		for id, backend := range rp.backends {
-			backend.mu.Lock()
-			backend.IsLeader = (id == currentLeaderID)
-			backend.mu.Unlock()
+		// Actualizar IsLeader en todos
+		for _, b := range rp.backends {
+			b.mu.Lock()
+			realID := b.ID
+			b.IsLeader = (realID == newLeaderID)
+			b.mu.Unlock()
 		}
 		rp.mu.Unlock()
 
-		log.Printf("[LEADER] Nuevo líder electo: Réplica %d (%s)",
-			currentLeaderID, currentLeader.URL)
+		log.Printf("[PROXY] Cambio de líder detectado: %d → %d", oldLeader, newLeaderID)
 	}
 }
 
