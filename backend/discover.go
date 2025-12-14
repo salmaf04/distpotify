@@ -4,12 +4,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"time"
 )
 
 func (s *Server) discoverLeaderByScanning() int {
-	basePort := 8080
+	const serviceName = "backend" // Nombre del servicio en Docker Swarm (ajustar si es diferente, e.g. "myapp_backend")
+	const clusterPath = "/cluster"
+	const listenPort = 3003 // Puerto en el que escucha el contenedor (target port)
 
 	type clusterResp struct {
 		NodeID   int  `json:"node_id"`
@@ -18,23 +21,30 @@ func (s *Server) discoverLeaderByScanning() int {
 
 	client := &http.Client{Timeout: 2 * time.Second}
 
-	for i := 1; i <= 6; i++ {
-		if i == s.nodeID {
-			continue
-		}
+	// Resolver todas las IPs de las tareas/replicas usando el DNS interno de Swarm
+	taskHost := "tasks." + serviceName
+	addrs, err := net.LookupHost(taskHost)
+	if err != nil {
+		log.Printf("Nodo %d no pudo resolver DNS para %s: %v", s.nodeID, taskHost, err)
+		return 0
+	}
 
-		port := basePort
-		if i > 1 {
-			port = basePort + (i - 1)
-		}
+	if len(addrs) == 0 {
+		log.Printf("Nodo %d no encontró tareas para %s", s.nodeID, taskHost)
+		return 0
+	}
 
-		url := fmt.Sprintf("http://backend%d:%d/cluster", i, port)
+	// Escanear cada IP encontrada (excluyendo la propia si es necesario)
+	for _, ip := range addrs {
+		// Opcional: excluir la propia IP (aunque el nodo mismo podría ser líder)
+		// if ip == s.myOwnIP { continue }
+
+		url := fmt.Sprintf("http://%s:%d%s", ip, listenPort, clusterPath)
 
 		resp, err := client.Get(url)
 		if err != nil {
-			continue
+			continue // Timeout o conexión rechazada → siguiente
 		}
-
 		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
 			continue
@@ -48,11 +58,11 @@ func (s *Server) discoverLeaderByScanning() int {
 		resp.Body.Close()
 
 		if cr.IsLeader {
-			log.Printf("Nodo %d descubrió líder %d escaneando backend%d", s.nodeID, cr.NodeID, i)
+			log.Printf("Nodo %d descubrió líder %d escaneando %s (%s)", s.nodeID, cr.NodeID, taskHost, ip)
 			return cr.NodeID
 		}
 	}
 
-	log.Printf("Nodo %d no encontró líder escaneando backend1..backend6", s.nodeID)
+	log.Printf("Nodo %d no encontró líder escaneando %s (%d tareas encontradas)", s.nodeID, taskHost, len(addrs))
 	return 0
 }

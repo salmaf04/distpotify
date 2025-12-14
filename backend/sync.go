@@ -110,14 +110,9 @@ func (s *Server) sendSongToNode(nodeID int, song models.Song) {
 		return
 	}
 
-	basePort := 8080
-	internalPort := basePort
-	if nodeID > 1 {
-		internalPort = basePort + (nodeID - 1)
-	}
-	url := fmt.Sprintf("http://backend%d:%d/internal/sync", nodeID, internalPort)
-
+	url := fmt.Sprintf("http://backend%d:3003/internal/sync", nodeID)
 	client := &http.Client{Timeout: 3 * time.Second}
+
 	resp, err := client.Post(url, "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
 		log.Printf("Error enviando canción a nodo %d: %v", nodeID, err)

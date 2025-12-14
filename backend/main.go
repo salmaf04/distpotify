@@ -48,8 +48,9 @@ type ElectionMessage struct {
 }
 
 func (s *Server) nodeURL(nodeID int) string {
-	port := 8080 + (nodeID - 1)
-	return fmt.Sprintf("http://backend%d:%d", nodeID, port)
+	// Usamos el nombre específico del contenedor (backend1, backend2...)
+	// Y el puerto interno ESTÁNDAR (3003) definido en tus Dockerfiles/Docker run
+	return fmt.Sprintf("http://backend%d:3003", nodeID)
 }
 
 // Configuración de conexiones DB
@@ -257,8 +258,9 @@ func (s *Server) uploadSongHandler(c *fiber.Ctx) error {
 	if !isLeader {
 		// Redirigir al líder
 		return c.Status(fiber.StatusTemporaryRedirect).JSON(fiber.Map{
-			"error":        "No soy el líder para operaciones de escritura",
-			"redirect_to":  fmt.Sprintf("http://backend%d:%d/api/songs/upload", leaderID, 8080),
+			"error": "No soy el líder para operaciones de escritura",
+			// Ahora (Puerto interno fijo 3003)
+			"redirect_to":  fmt.Sprintf("http://backend%d:3003/api/songs/upload", leaderID),
 			"current_node": s.nodeID,
 			"leader":       leaderID,
 			"action":       "redirect_to_leader",
@@ -281,8 +283,9 @@ func (s *Server) createSongHandler(c *fiber.Ctx) error {
 		log.Printf("Soy nodo %d y estoy redirigiendo a nodo lider %v", s.nodeID, leaderID)
 
 		return c.Status(fiber.StatusTemporaryRedirect).JSON(fiber.Map{
-			"error":        "No soy el líder para operaciones de escritura",
-			"redirect_to":  fmt.Sprintf("http://backend%d:%d/api/songs", leaderID, 8080),
+			"error": "No soy el líder para operaciones de escritura",
+			// Ahora (Puerto interno fijo 3003)
+			"redirect_to":  fmt.Sprintf("http://backend%d:3003/api/songs/upload", leaderID),
 			"current_node": s.nodeID,
 			"leader":       leaderID,
 			"action":       "redirect_to_leader",
@@ -419,12 +422,7 @@ func (s *Server) syncNewSongToFollowers(song *structs.SongInputModel) {
 func main() {
 	// Leer configuración
 	nodeID := getEnvAsInt("NODE_ID", 1)
-	apiPort := getEnvAsInt("API_PORT", 8080)
-
-	// Ajustar puerto para evitar conflictos
-	if nodeID > 1 {
-		apiPort = apiPort + (nodeID - 1)
-	}
+	apiPort := 3003
 
 	// Crear directorio de almacenamiento si no existe
 	os.MkdirAll("storage/songs", 0755)

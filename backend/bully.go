@@ -93,14 +93,19 @@ func (s *Server) declareVictory() {
 }
 
 func (s *Server) broadcastCoordinator() {
+	allNodes := s.getAllNodeIDs()
+	if allNodes == nil {
+		log.Printf("Nodo %d no pudo obtener lista de nodos para broadcast COORDINATOR", s.nodeID)
+		return
+	}
+
 	msg := ElectionMessage{
 		Type:   "COORDINATOR",
 		NodeID: s.nodeID,
 	}
-
 	jsonData, _ := json.Marshal(msg)
 
-	for nodeID := 1; nodeID <= 3; nodeID++ {
+	for _, nodeID := range allNodes {
 		if nodeID == s.nodeID {
 			continue
 		}
@@ -108,9 +113,11 @@ func (s *Server) broadcastCoordinator() {
 			url := s.nodeURL(id) + "/internal/election"
 			client := &http.Client{Timeout: CoordinationTimeout}
 			client.Post(url, "application/json", bytes.NewBuffer(jsonData))
-			// No nos importa si falla, eventualmente se enterará por heartbeat o sync
+			// Ignoramos errores: el nodo caído se enterará después por heartbeat o scanning
 		}(nodeID)
 	}
+
+	log.Printf("Nodo %d envió COORDINATOR a %d nodos", s.nodeID, len(allNodes)-1)
 }
 
 func (s *Server) bootstrapLeadership() {
