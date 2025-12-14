@@ -123,44 +123,6 @@ func (s *Server) applyOperations(ops []Operation) {
 	}
 }
 
-func (s *Server) sendSongToNode(nodeID int, song models.Song) {
-	log.Printf("Enviando canción '%s' a nodo %d", song.Title, nodeID)
-
-	// Estructura de request que debe coincidir con lo que espera syncHandler
-	type SyncRequest struct {
-		Songs  []models.Song `json:"songs"`
-		NodeID int           `json:"node_id"`
-	}
-
-	reqBody := SyncRequest{
-		Songs:  []models.Song{song}, // solo la canción nueva
-		NodeID: s.nodeID,            // quién envía
-	}
-
-	jsonData, err := json.Marshal(reqBody)
-	if err != nil {
-		log.Printf("Error serializando canción para nodo %d: %v", nodeID, err)
-		return
-	}
-
-	url := fmt.Sprintf("http://backend%d:3003/internal/sync", nodeID)
-	client := &http.Client{Timeout: 3 * time.Second}
-
-	resp, err := client.Post(url, "application/json", bytes.NewBuffer(jsonData))
-	if err != nil {
-		log.Printf("Error enviando canción a nodo %d: %v", nodeID, err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		log.Printf("Nodo %d devolvió status %d al sincronizar canción", nodeID, resp.StatusCode)
-		return
-	}
-
-	log.Printf("Canción '%s' sincronizada correctamente con nodo %d", song.Title, nodeID)
-}
-
 // Handler para sync interno
 func (s *Server) syncHandler(c *fiber.Ctx) error {
 	type SyncRequest struct {
