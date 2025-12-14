@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"strings"
 	"sync"
 	"time"
 
@@ -34,9 +33,9 @@ type ReverseProxy struct {
 }
 
 const (
-	backendServiceName = "backend" // Nombre exacto del servicio en docker-compose/stack
-	backendPort        = 3003      // Puerto interno del contenedor (target port)
-	discoveryInterval  = 15 * time.Second
+	backendServiceName = "backend"       // Nombre exacto del servicio en docker-compose/stack
+	backendPort        = 3003            // Puerto interno del contenedor (target port)
+	discoveryInterval  = 5 * time.Second // Reducido de 15s a 5s para detectar cambios más rápido
 )
 
 func NewReverseProxy(serviceName string, port int) *ReverseProxy {
@@ -44,7 +43,7 @@ func NewReverseProxy(serviceName string, port int) *ReverseProxy {
 	rp := &ReverseProxy{
 		backends:     make(map[int]*BackendNode),
 		backendByURL: make(map[string]*BackendNode),
-		healthCheck:  10 * time.Second,
+		healthCheck:  5 * time.Second, // Reducido de 10s a 5s
 		client: &fasthttp.Client{
 			NoDefaultUserAgentHeader: true,
 			DisablePathNormalizing:   true,
@@ -84,23 +83,12 @@ func (rp *ReverseProxy) discoverBackends() {
 		return
 	}
 
-	log.Printf("[PROXY] Descubiertas %d réplicas via DNS: %v", len(addrs), addrs)
-
 	rp.mu.Lock()
 	defer rp.mu.Unlock()
 
-	// Marcar todos como posiblemente obsoletos
-	for _, b := range rp.backends {
-		b.mu.Lock()
-		b.IsAlive = false // los volveremos a validar en health check
-		b.mu.Unlock()
-	}
-
 	// Mapa temporal de URLs actuales descubiertas
-	currentURLs := make(map[string]bool)
 	for _, ip := range addrs {
 		url := fmt.Sprintf("http://%s:%d", ip, backendPort)
-		currentURLs[url] = true
 
 		// Si ya existe, continuar
 		if existing, ok := rp.backendByURL[url]; ok {
@@ -117,7 +105,7 @@ func (rp *ReverseProxy) discoverBackends() {
 
 		newBackend := &BackendNode{
 			URL:       url,
-			IsAlive:   false, // se comprobará en el próximo health check
+			IsAlive:   true, // Asumimos vivo al descubrirlo, el health check lo corregirá si no
 			IsLeader:  false,
 			ID:        newID,
 			IP:        ip,
@@ -129,9 +117,6 @@ func (rp *ReverseProxy) discoverBackends() {
 
 		log.Printf("[PROXY] Nueva réplica descubierta y añadida: ID %d → %s", newID, url)
 	}
-
-	// Opcional: eliminar backends que ya no existen (después de un tiempo)
-	// Por ahora los mantenemos pero marcados como !IsAlive
 }
 
 func (rp *ReverseProxy) startHealthChecks() {
@@ -147,8 +132,6 @@ func (rp *ReverseProxy) startHealthChecks() {
 
 func (rp *ReverseProxy) checkAllBackends() {
 	var wg sync.WaitGroup
-
-	log.Printf("Chequeando todos los backends")
 
 	rp.mu.RLock()
 	backends := make([]*BackendNode, 0, len(rp.backends))
@@ -173,8 +156,6 @@ func (rp *ReverseProxy) checkAllBackends() {
 }
 
 func (rp *ReverseProxy) isBackendAlive(url string) bool {
-	log.Printf("Preguntando por los backends quien esta vivo")
-
 	req := fasthttp.AcquireRequest()
 	defer fasthttp.ReleaseRequest(req)
 
@@ -184,13 +165,10 @@ func (rp *ReverseProxy) isBackendAlive(url string) bool {
 	req.SetRequestURI(url + "/health")
 	req.Header.SetMethod("GET")
 
-	err := rp.client.DoTimeout(req, resp, 3*time.Second)
+	err := rp.client.DoTimeout(req, resp, 2*time.Second)
 	if err != nil {
-		log.Printf("Esto dio error %v", err)
 		return false
 	}
-
-	log.Printf("Status Code: %d", resp.StatusCode())
 
 	return resp.StatusCode() == fiber.StatusOK
 }
@@ -209,7 +187,7 @@ func (rp *ReverseProxy) getClusterInfo(url string) (int, bool, error) {
 	req.SetRequestURI(url + "/cluster")
 	req.Header.SetMethod("GET")
 
-	if err := rp.client.DoTimeout(req, resp, 3*time.Second); err != nil {
+	if err := rp.client.DoTimeout(req, resp, 2*time.Second); err != nil {
 		return 0, false, err
 	}
 
@@ -236,6 +214,15 @@ func (rp *ReverseProxy) discoverLeader() {
 	var newLeaderID int = 0
 
 	for _, backend := range backends {
+		// Solo consultar si está vivo para no perder tiempo
+		backend.mu.RLock()
+		isAlive := backend.IsAlive
+		backend.mu.RUnlock()
+
+		if !isAlive {
+			continue
+		}
+
 		nodeID, isLeader, err := rp.getClusterInfo(backend.URL)
 		if err != nil {
 			continue
@@ -243,77 +230,61 @@ func (rp *ReverseProxy) discoverLeader() {
 
 		// Actualizar el ID real del backend (importante para consistencia)
 		backend.mu.Lock()
-		backend.ID = nodeID // ¡Ahora usamos el node_id real del backend!
+		backend.ID = nodeID         // ¡Ahora usamos el node_id real del backend!
+		backend.IsLeader = isLeader // Actualizamos directamente aquí también
 		backend.mu.Unlock()
 
 		if isLeader {
 			newLeaderID = nodeID
-			break
+			// No hacemos break porque queremos actualizar los IDs de todos
 		}
 	}
 
-	if newLeaderID > 0 && newLeaderID != rp.leaderID {
+	if newLeaderID > 0 {
 		rp.mu.Lock()
-		oldLeader := rp.leaderID
-		rp.leaderID = newLeaderID
-
-		// Actualizar IsLeader en todos
-		for _, b := range rp.backends {
-			b.mu.Lock()
-			realID := b.ID
-			b.IsLeader = (realID == newLeaderID)
-			b.mu.Unlock()
+		if rp.leaderID != newLeaderID {
+			log.Printf("[PROXY] Cambio de líder detectado: %d → %d", rp.leaderID, newLeaderID)
+			rp.leaderID = newLeaderID
 		}
 		rp.mu.Unlock()
-
-		log.Printf("[PROXY] Cambio de líder detectado: %d → %d", oldLeader, newLeaderID)
 	}
-}
-
-func (rp *ReverseProxy) checkIfLeader(url string) bool {
-	log.Printf("Chequeando quien cojones es el lider , manda huevos 2:38 de la madrugada")
-
-	req := fasthttp.AcquireRequest()
-	defer fasthttp.ReleaseRequest(req)
-
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseResponse(resp)
-
-	req.SetRequestURI(url + "/cluster")
-	req.Header.SetMethod("GET")
-
-	err := rp.client.DoTimeout(req, resp, 3*time.Second)
-	if err != nil {
-		return false
-	}
-
-	// Parsear respuesta JSON
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(resp.Body(), &result); err != nil {
-		return false
-	}
-
-	if isLeader, ok := result["is_leader"].(bool); ok {
-		log.Printf("ya sabemos quien es el lider %s", url)
-		return isLeader
-	}
-	return false
 }
 
 func (rp *ReverseProxy) getLeaderBackend() (*BackendNode, bool) {
 	rp.mu.RLock()
 	defer rp.mu.RUnlock()
 
-	log.Printf("Este es mi actual lider %d y lo tengo en status %v", rp.leaderID, rp.backends[rp.leaderID])
+	// Primero intentar buscar por el ID del líder que conocemos
+	if rp.leaderID > 0 {
+		// Buscar en el mapa de backends el nodo que tenga este ID
+		for _, backend := range rp.backends {
+			backend.mu.RLock()
+			id := backend.ID
+			isLeader := backend.IsLeader
+			isAlive := backend.IsAlive
+			backend.mu.RUnlock()
 
-	if backend, exists := rp.backends[rp.leaderID]; exists {
+			if id == rp.leaderID && isAlive {
+				// Doble verificación: ¿sigue diciendo que es líder?
+				if isLeader {
+					return backend, true
+				}
+			}
+		}
+	}
+
+	// Si falla, buscar cualquiera que diga ser líder
+	for _, backend := range rp.backends {
 		backend.mu.RLock()
-		defer backend.mu.RUnlock()
-		if backend.IsAlive && backend.IsLeader {
+		isLeader := backend.IsLeader
+		isAlive := backend.IsAlive
+		backend.mu.RUnlock()
+
+		if isAlive && isLeader {
 			return backend, true
 		}
 	}
+
 	return nil, false
 }
 
@@ -340,10 +311,15 @@ func (rp *ReverseProxy) getRandomBackend() (*BackendNode, bool) {
 	return selected, true
 }
 
-func (rp *ReverseProxy) createProxyHandler() fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		log.Printf("Entrando al proxy - Request: %s %s", c.Method(), c.Path())
+func (rp *ReverseProxy) isWriteOperation(method, path string) bool {
+	if method == "POST" || method == "PUT" || method == "DELETE" || method == "PATCH" {
+		return true
+	}
+	return false
+}
 
+func (rp *ReverseProxy) CreateProxyHandler() fiber.Handler {
+	return func(c *fiber.Ctx) error {
 		// Determinar a qué backend redirigir
 		var targetBackend *BackendNode
 		var found bool
@@ -356,23 +332,25 @@ func (rp *ReverseProxy) createProxyHandler() fiber.Handler {
 		isWriteOperation := rp.isWriteOperation(method, path)
 
 		if isWriteOperation {
+			// Intentar refrescar líder si no tenemos uno válido
+			if rp.leaderID == 0 {
+				rp.discoverLeader()
+			}
+
 			targetBackend, found = rp.getLeaderBackend()
 			if !found {
-				// Intentar encontrar cualquier backend vivo
-				targetBackend, found = rp.getRandomBackend()
+				// Último intento: forzar descubrimiento rápido
+				rp.discoverLeader()
+				targetBackend, found = rp.getLeaderBackend()
+
 				if !found {
-					log.Printf("Lider No encontrado")
+					log.Printf("Lider No encontrado tras reintento")
 					return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
 						"error":  "No hay backends disponibles",
 						"action": "try_again_later",
 					})
 				}
-				// Log warning - escribiendo en no-líder
-				log.Printf("[PROXY WARNING] Escritura en no-líder %d (no hay líder disponible)",
-					targetBackend.ID)
 			}
-
-			log.Printf("Lider encontrado %d", targetBackend.ID)
 		} else {
 			// Para lecturas, usar cualquier backend vivo
 			targetBackend, found = rp.getRandomBackend()
@@ -403,109 +381,29 @@ func (rp *ReverseProxy) createProxyHandler() fiber.Handler {
 		req.SetRequestURI(targetURL)
 		req.Header.SetMethod(method)
 
-		// Copiar headers originales
+		// Copiar headers
 		c.Request().Header.VisitAll(func(key, value []byte) {
 			req.Header.SetBytesKV(key, value)
 		})
 
-		// Agregar headers de proxy
-		req.Header.Set("X-Forwarded-For", c.IP())
-		req.Header.Set("X-Proxy-Server", "music-reverse-proxy")
-		req.Header.Set("X-Target-Backend", fmt.Sprintf("%d", targetBackend.ID))
-		req.Header.Set("X-Original-Path", path)
-		req.Header.Set("X-Node-ID", fmt.Sprintf("%d", targetBackend.ID))
+		// Copiar body
+		req.SetBody(c.Request().Body())
 
-		// Para operaciones de upload, manejar multipart/form-data
-		if method == "POST" && strings.Contains(c.Get("Content-Type"), "multipart/form-data") {
-			body := c.Body()
-			req.SetBody(body)
-			req.Header.SetContentType(c.Get("Content-Type"))
-		} else if len(c.Body()) > 0 {
-			req.SetBody(c.Body())
-		}
-
-		// Realizar la request al backend
-		err := rp.client.Do(req, resp)
-		if err != nil {
-			log.Printf("[PROXY ERROR] Error al conectar con backend %d: %v", targetBackend.ID, err)
-
-			// Marcar como no vivo
-			targetBackend.mu.Lock()
-			targetBackend.IsAlive = false
-			targetBackend.mu.Unlock()
-
+		// Ejecutar request
+		if err := rp.client.DoTimeout(req, resp, 10*time.Second); err != nil {
+			log.Printf("Error forwarding request: %v", err)
 			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{
-				"error":      "No se pudo conectar con el servidor backend",
-				"backend_id": targetBackend.ID,
-				"action":     "retry_with_other_node",
+				"error": "Error connecting to backend",
 			})
 		}
 
-		// Copiar status code
+		// Copiar respuesta
 		c.Status(resp.StatusCode())
-
-		// Copiar headers de respuesta
 		resp.Header.VisitAll(func(key, value []byte) {
 			c.Response().Header.SetBytesKV(key, value)
 		})
-
-		// Asegurarse de que no se copien headers de transferencia
-		c.Response().Header.Del("Transfer-Encoding")
-
-		// Copiar body de respuesta
 		c.Response().SetBody(resp.Body())
 
 		return nil
 	}
-}
-
-func (rp *ReverseProxy) isWriteOperation(method, path string) bool {
-	if method == "POST" || method == "PUT" || method == "DELETE" || method == "PATCH" {
-		return true
-	}
-
-	writePaths := []string{
-		"/internal/sync",
-		"/election/force",
-	}
-
-	for _, writePath := range writePaths {
-		if strings.HasPrefix(path, writePath) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func (rp *ReverseProxy) statusHandler(c *fiber.Ctx) error {
-	rp.mu.RLock()
-	defer rp.mu.RUnlock()
-
-	status := make(map[string]interface{})
-	backendsStatus := make(map[int]interface{})
-
-	for id, backend := range rp.backends {
-		backend.mu.RLock()
-		backendsStatus[id] = fiber.Map{
-			"url":            backend.URL,
-			"ip":             backend.IP,
-			"alive":          backend.IsAlive,
-			"leader":         backend.IsLeader,
-			"last_check":     backend.LastCheck.Format(time.RFC3339),
-			"current_leader": rp.leaderID,
-		}
-		backend.mu.RUnlock()
-	}
-
-	status["backends"] = backendsStatus
-	status["current_leader"] = rp.leaderID
-	status["total_backends"] = len(rp.backends)
-	status["timestamp"] = time.Now().Unix()
-
-	return c.JSON(status)
-}
-
-func (rp *ReverseProxy) CreateProxyHandler() fiber.Handler {
-	return rp.createProxyHandler() // o renombra directamente createProxyHandler a este nombre
 }

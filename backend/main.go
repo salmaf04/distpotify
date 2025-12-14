@@ -7,7 +7,6 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
-	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -348,7 +347,16 @@ func (s *Server) createSongHandler(c *fiber.Ctx) error {
 		newSong.ID = 0
 		s.opLog.Append(OpCreate, newSong)
 
-		go s.syncNewSongToFollowers(input)
+		// NUEVO: Replicación semi-síncrona (esperar ACKs)
+		// Requerir al menos 1 ACK si hay más nodos, o 0 si estoy solo
+		// Ajustado a 2 según requerimiento, pero la función ajusta automáticamente si hay menos nodos
+		success := s.replicateToFollowers(newSong, 2)
+
+		if !success {
+			log.Printf("ADVERTENCIA: No se alcanzó el quórum de replicación deseado")
+			// Opcional: Podrías retornar error 500 o 202 Accepted indicando riesgo
+			// Por ahora seguimos retornando 201 pero con log de advertencia
+		}
 	}
 
 	return result
@@ -425,67 +433,4 @@ func (s *Server) clusterHandler(c *fiber.Ctx) error {
 		"api_port":  s.apiPort,
 		"service":   "music-api",
 	})
-}
-
-func (s *Server) syncNewSongToFollowers(song *structs.SongInputModel) {
-	// Sincronizar nueva canción inmediatamente
-	log.Printf("Sincronizando nueva canción con followers SIUUUU")
-
-	var cover string
-	if song.Cover != nil {
-		cover = *song.Cover
-	} else {
-		cover = "" // o el valor por defecto que prefieras
-	}
-
-	// Convertir a modelo para sync
-	newSong := models.Song{
-		Title:    song.Title,
-		Artist:   song.Artist,
-		Album:    song.Album,
-		Genre:    song.Genre,
-		Duration: song.Duration,
-		File:     song.File,
-		Cover:    cover,
-	}
-
-	fmt.Printf("Estes es el id : %d", newSong.ID)
-
-	// Enviar a followers
-	for nodeID := 1; nodeID <= 3; nodeID++ {
-		if nodeID != s.nodeID {
-			go s.sendSongToNode(nodeID, newSong)
-		}
-	}
-}
-
-func main() {
-	// Leer configuración
-	nodeID := getEnvAsInt("NODE_ID", 1)
-	apiPort := 3003
-
-	// Crear directorio de almacenamiento si no existe
-	os.MkdirAll("storage/songs", 0755)
-
-	server := NewServer(nodeID, apiPort)
-
-	addr := fmt.Sprintf(":%d", apiPort)
-	log.Printf("=== Music API Réplica %d iniciando ===", nodeID)
-	log.Printf("API: http://0.0.0.0:%d", apiPort)
-	log.Printf("Node ID: %d", nodeID)
-	log.Printf("Storage: ./storage/songs/")
-	log.Printf("===============================\n")
-
-	if err := server.app.Listen(addr); err != nil {
-		log.Fatalf("Error iniciando servidor: %v", err)
-	}
-}
-
-func getEnvAsInt(key string, defaultValue int) int {
-	if value := os.Getenv(key); value != "" {
-		if intValue, err := strconv.Atoi(value); err == nil {
-			return intValue
-		}
-	}
-	return defaultValue
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -255,4 +256,80 @@ func (s *Server) songsSnapshotHandler(c *fiber.Ctx) error {
 		"count":   len(songs),
 		"node_id": s.nodeID,
 	})
+}
+
+// replicateToFollowers envía la canción a todos los followers y espera un mínimo de ACKs
+func (s *Server) replicateToFollowers(song models.Song, minAcks int) bool {
+	followers := s.getAllNodeIDs()
+
+	// Filtrar mi propio ID
+	var targetNodes []int
+	for _, id := range followers {
+		if id != s.nodeID {
+			targetNodes = append(targetNodes, id)
+		}
+	}
+
+	totalFollowers := len(targetNodes)
+	if totalFollowers == 0 {
+		// Si soy el único nodo, se considera éxito inmediato
+		return true
+	}
+
+	// Ajustar minAcks si hay menos nodos disponibles que lo requerido
+	if totalFollowers < minAcks {
+		minAcks = totalFollowers
+		log.Printf("Ajustando minAcks a %d porque solo hay %d followers", minAcks, totalFollowers)
+	}
+
+	var wg sync.WaitGroup
+	ackChan := make(chan bool, totalFollowers)
+
+	for _, nodeID := range targetNodes {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+
+			// Reutilizamos la lógica de envío pero necesitamos saber si fue exitoso
+			// sendSongToNode no retorna bool, así que implementamos una versión inline simplificada
+
+			type SyncRequest struct {
+				Songs  []models.Song `json:"songs"`
+				NodeID int           `json:"node_id"`
+			}
+			reqBody := SyncRequest{
+				Songs:  []models.Song{song},
+				NodeID: s.nodeID,
+			}
+			jsonData, _ := json.Marshal(reqBody)
+			url := fmt.Sprintf("http://backend%d:3003/internal/sync", id)
+			client := &http.Client{Timeout: 2 * time.Second} // Timeout corto para no bloquear
+
+			resp, err := client.Post(url, "application/json", bytes.NewBuffer(jsonData))
+			if err == nil && resp.StatusCode == http.StatusOK {
+				ackChan <- true
+			} else {
+				ackChan <- false
+			}
+			if resp != nil {
+				resp.Body.Close()
+			}
+		}(nodeID)
+	}
+
+	// Cerrar canal cuando todos terminen
+	go func() {
+		wg.Wait()
+		close(ackChan)
+	}()
+
+	acksReceived := 0
+	for success := range ackChan {
+		if success {
+			acksReceived++
+		}
+	}
+
+	log.Printf("Replicación completada: %d/%d ACKs recibidos (min requerido: %d)", acksReceived, totalFollowers, minAcks)
+	return acksReceived >= minAcks
 }
