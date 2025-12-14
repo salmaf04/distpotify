@@ -24,15 +24,17 @@ import (
 )
 
 type Server struct {
-	app         *fiber.App
-	db          *gorm.DB
-	sqlDB       *sql.DB
-	nodeID      int
-	apiPort     int
-	isLeader    bool
-	leaderID    int
-	mu          sync.RWMutex
-	songHandler *handlers.SongHandler
+	app              *fiber.App
+	db               *gorm.DB
+	sqlDB            *sql.DB
+	nodeID           int
+	apiPort          int
+	isLeader         bool
+	leaderID         int
+	mu               sync.RWMutex
+	songHandler      *handlers.SongHandler
+	opLog            *OpLog // Nuevo
+	lastAppliedIndex int64
 }
 
 const (
@@ -123,14 +125,16 @@ func NewServer(nodeID, apiPort int) *Server {
 	}))
 
 	server := &Server{
-		app:         app,
-		db:          gormDB,
-		sqlDB:       sqlDB,
-		nodeID:      nodeID,
-		apiPort:     apiPort,
-		isLeader:    false,
-		leaderID:    0,
-		songHandler: songHandler,
+		app:              app,
+		db:               gormDB,
+		sqlDB:            sqlDB,
+		nodeID:           nodeID,
+		apiPort:          apiPort,
+		isLeader:         false,
+		leaderID:         0,
+		songHandler:      songHandler,
+		opLog:            NewOpLog(1000), // Tamaño máximo del OpLog
+		lastAppliedIndex: 0,
 	}
 
 	server.setupRoutes()
@@ -156,6 +160,7 @@ func (s *Server) setupRoutes() {
 	api.Get("/songs/:id", s.getSongByIDHandler)    // Cualquier réplica
 	api.Get("/songs/search", s.searchSongsHandler) // Cualquier réplica
 	api.Get("/songs/filter", s.filterSongsHandler) // Cualquier réplica
+	s.app.Get("/internal/sync/delta", s.deltaSyncHandler)
 
 	s.app.Post("/internal/election", s.electionHandler)
 	s.app.Get("/internal/songs/snapshot", s.songsSnapshotHandler)
@@ -325,10 +330,45 @@ func (s *Server) createSongHandler(c *fiber.Ctx) error {
 
 	// Si se insertó correctamente, sincronizar con followers
 	if c.Response().StatusCode() == fiber.StatusCreated {
+		songInputCover := ""
+		if songInput.Cover != nil {
+			songInputCover = *songInput.Cover
+		}
+
+		newSong := models.Song{
+			Title:    input.Title,
+			Artist:   input.Artist,
+			Album:    input.Album,
+			Genre:    input.Genre,
+			Duration: input.Duration,
+			File:     input.File,
+			Cover:    songInputCover,
+		}
+
+		newSong.ID = 0
+		s.opLog.Append(OpCreate, newSong)
+
 		go s.syncNewSongToFollowers(input)
 	}
 
 	return result
+}
+
+func (s *Server) deltaSyncHandler(c *fiber.Ctx) error {
+	sinceIndex, _ := strconv.ParseInt(c.Query("since"), 10, 64)
+
+	ops, ok := s.opLog.GetSince(sinceIndex)
+	if !ok {
+		// El nodo está muy desactualizado (el log ya rotó)
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+			"error": "Log truncated, full snapshot required",
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"operations": ops,
+		"count":      len(ops),
+	})
 }
 
 // Handler para obtener todas las canciones (cualquier réplica)

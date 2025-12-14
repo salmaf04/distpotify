@@ -13,24 +13,38 @@ import (
 )
 
 func (s *Server) syncDataFromLeader() {
-	// Followers obtienen datos del líder
 	s.mu.RLock()
 	leaderID := s.leaderID
-	myID := s.nodeID
-	isLeader := s.isLeader
+	lastIndex := s.lastAppliedIndex
 	s.mu.RUnlock()
 
-	if isLeader || leaderID <= 0 || leaderID == myID {
+	if leaderID <= 0 {
 		return
 	}
 
-	log.Printf("Nodo %d sincronizando datos del líder %d", myID, leaderID)
+	// 1. INTENTAR DELTA SYNC
+	url := fmt.Sprintf("%s/internal/sync/delta?since=%d", s.nodeURL(leaderID), lastIndex)
+	resp, err := http.Get(url)
+
+	if err == nil && resp.StatusCode == http.StatusOK {
+		var result struct {
+			Operations []Operation `json:"operations"`
+		}
+		if json.NewDecoder(resp.Body).Decode(&result) == nil {
+			log.Printf("Recibidas %d operaciones delta", len(result.Operations))
+			s.applyOperations(result.Operations)
+			return // Éxito
+		}
+	}
+
+	// 2. FALLBACK A SNAPSHOT (Si falla delta o devuelve 409 Conflict)
+	log.Printf("Delta sync falló o insuficiente. Solicitando Snapshot completo...")
 
 	// Construir URL al endpoint de snapshot del líder
-	url := s.nodeURL(leaderID) + "/internal/songs/snapshot"
+	url = s.nodeURL(leaderID) + "/internal/songs/snapshot"
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get(url)
+	resp, err = client.Get(url)
 	if err != nil {
 		log.Printf("Error obteniendo snapshot del líder %d: %v", leaderID, err)
 		return
@@ -54,7 +68,7 @@ func (s *Server) syncDataFromLeader() {
 		return
 	}
 
-	log.Printf("Nodo %d recibió snapshot de Songs con %d canciones", myID, result.Count)
+	log.Printf("Nodo %d recibió snapshot de Songs con %d canciones", s.nodeID, result.Count)
 
 	// Insertar/actualizar en mi DB
 	tx := s.db.Begin()
@@ -80,14 +94,32 @@ func (s *Server) syncDataFromLeader() {
 		return
 	}
 
-	log.Printf("Nodo %d sincronizó %d canciones desde líder %d", myID, len(synced_songs), leaderID)
+	log.Printf("Nodo %d sincronizó %d canciones desde líder %d", s.nodeID, len(synced_songs), leaderID)
 
 	if err := tx.Commit().Error; err != nil {
 		log.Printf("Error haciendo commit de sync desde líder: %v", err)
 		return
 	}
 
-	log.Printf("Nodo %d sincronizó %d canciones desde líder %d", myID, len(result.Songs), leaderID)
+	log.Printf("Nodo %d sincronizó %d canciones desde líder %d", s.nodeID, len(result.Songs), leaderID)
+}
+
+func (s *Server) applyOperations(ops []Operation) {
+	for _, op := range ops {
+		switch op.Type {
+		case OpCreate:
+			s.db.Create(&op.Data) // Usar Clauses(OnConflict) es mejor
+			// case OpUpdate: ...
+			// case OpDelete: ...
+		}
+
+		// Actualizar índice local
+		s.mu.Lock()
+		if op.Index > s.lastAppliedIndex {
+			s.lastAppliedIndex = op.Index
+		}
+		s.mu.Unlock()
+	}
 }
 
 func (s *Server) sendSongToNode(nodeID int, song models.Song) {
