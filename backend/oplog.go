@@ -2,8 +2,11 @@ package main
 
 import (
 	"distributed-systems-project/models"
+	"encoding/json"
 	"sync"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 type OperationType string
@@ -24,17 +27,13 @@ type Operation struct {
 }
 
 type OpLog struct {
-	mu         sync.RWMutex
-	operations []Operation
-	maxSize    int
-	startIndex int64 // Índice del primer elemento en el buffer
+	mu sync.RWMutex
+	db *gorm.DB
 }
 
-func NewOpLog(maxSize int) *OpLog {
+func NewOpLog(db *gorm.DB) *OpLog {
 	return &OpLog{
-		operations: make([]Operation, 0, maxSize),
-		maxSize:    maxSize,
-		startIndex: 1,
+		db: db,
 	}
 }
 
@@ -42,27 +41,23 @@ func (l *OpLog) Append(opType OperationType, data models.Song) int64 {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	lastIndex := l.startIndex + int64(len(l.operations)) - 1
-	if len(l.operations) == 0 {
-		lastIndex = l.startIndex - 1
+	var lastOp models.OperationLog
+	var newIndex int64 = 1
+
+	if err := l.db.Order("index desc").First(&lastOp).Error; err == nil {
+		newIndex = lastOp.Index + 1
 	}
 
-	newIndex := lastIndex + 1
+	jsonData, _ := json.Marshal(data)
 
-	op := Operation{
+	opLog := models.OperationLog{
 		Index:     newIndex,
-		Type:      opType,
-		Data:      data,
+		Type:      string(opType),
+		Data:      jsonData,
 		Timestamp: time.Now().UnixNano(),
 	}
 
-	if len(l.operations) >= l.maxSize {
-		// Buffer lleno: eliminar el más antiguo
-		l.operations = l.operations[1:]
-		l.startIndex++
-	}
-
-	l.operations = append(l.operations, op)
+	l.db.Create(&opLog)
 	return newIndex
 }
 
@@ -70,54 +65,66 @@ func (l *OpLog) AppendUser(opType OperationType, data models.User) int64 {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	op := Operation{
-		Index:     l.startIndex + int64(len(l.operations)),
-		Type:      opType,
-		UserData:  &data,
+	var lastOp models.OperationLog
+	var newIndex int64 = 1
+	if err := l.db.Order("index desc").First(&lastOp).Error; err == nil {
+		newIndex = lastOp.Index + 1
+	}
+
+	jsonData, _ := json.Marshal(data)
+
+	opLog := models.OperationLog{
+		Index:     newIndex,
+		Type:      string(opType),
+		UserData:  jsonData,
 		Timestamp: time.Now().UnixNano(),
 	}
 
-	if len(l.operations) >= l.maxSize {
-		l.operations = l.operations[1:]
-		l.startIndex++
-	}
-
-	l.operations = append(l.operations, op)
-	return op.Index
+	l.db.Create(&opLog)
+	return newIndex
 }
 
-// GetSince devuelve operaciones estrictamente DESPUÉS del índice dado
 func (l *OpLog) GetSince(index int64) ([]Operation, bool) {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 
-	if len(l.operations) == 0 {
-		if index == 0 {
-			return []Operation{}, true
-		}
-		return nil, false // Log vacío pero piden > 0
-	}
-
-	firstLogIndex := l.startIndex
-	lastLogIndex := l.startIndex + int64(len(l.operations)) - 1
-
-	// Si piden algo más viejo de lo que tenemos, necesitamos Snapshot
-	if index < firstLogIndex-1 {
+	var logs []models.OperationLog
+	// Buscar operaciones posteriores al índice dado
+	if err := l.db.Where("index > ?", index).Order("index asc").Find(&logs).Error; err != nil {
 		return nil, false
 	}
 
-	if index >= lastLogIndex {
-		return []Operation{}, true
+	// Verificar si hay huecos (si el nodo está pidiendo algo más viejo de lo que tenemos)
+	var firstOp models.OperationLog
+	if err := l.db.Order("index asc").First(&firstOp).Error; err == nil {
+		if index < firstOp.Index-1 {
+			return nil, false // Se requiere snapshot completo
+		}
 	}
 
-	offset := index - firstLogIndex + 1
-	if offset < 0 {
-		offset = 0
+	// Convertir de modelo DB a estructura API
+	ops := make([]Operation, len(logs))
+	for i, log := range logs {
+		var song models.Song
+		var user *models.User
+
+		if len(log.Data) > 0 {
+			json.Unmarshal(log.Data, &song)
+		}
+		if len(log.UserData) > 0 {
+			u := models.User{}
+			json.Unmarshal(log.UserData, &u)
+			user = &u
+		}
+
+		ops[i] = Operation{
+			Index:     log.Index,
+			Type:      OperationType(log.Type),
+			Data:      song,
+			UserData:  user,
+			Timestamp: log.Timestamp,
+		}
 	}
 
-	// Copiar para evitar condiciones de carrera
-	result := make([]Operation, len(l.operations[offset:]))
-	copy(result, l.operations[offset:])
-
-	return result, true
+	return ops, true
 }

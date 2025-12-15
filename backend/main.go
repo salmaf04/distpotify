@@ -35,7 +35,7 @@ type Server struct {
 	mu               sync.RWMutex
 	songHandler      *handlers.SongHandler
 	authHandler      *handlers.AuthHandler
-	opLog            *OpLog // Nuevo
+	opLog            *OpLog
 	lastAppliedIndex int64
 }
 
@@ -99,6 +99,7 @@ func NewServer(nodeID, apiPort int) *Server {
 	err = gormDB.AutoMigrate(
 		&models.Song{},
 		&models.User{},
+		&models.OperationLog{},
 	)
 	if err != nil {
 		log.Printf("Error en migración: %v", err)
@@ -107,6 +108,7 @@ func NewServer(nodeID, apiPort int) *Server {
 	// Crear handler de canciones
 	songHandler := &handlers.SongHandler{DB: gormDB}
 	authHandler := &handlers.AuthHandler{DB: gormDB}
+	opLog := NewOpLog(gormDB)
 
 	// Crear app Fiber
 	app := fiber.New(fiber.Config{
@@ -136,9 +138,11 @@ func NewServer(nodeID, apiPort int) *Server {
 		leaderID:         0,
 		songHandler:      songHandler,
 		authHandler:      authHandler,
-		opLog:            NewOpLog(1000), // Tamaño máximo del OpLog
+		opLog:            opLog,
 		lastAppliedIndex: 0,
 	}
+
+	log.Printf("Me reinicie")
 
 	server.setupRoutes()
 	go server.bootstrapLeadership()

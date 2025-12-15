@@ -13,6 +13,15 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
+type ReplicationUser struct {
+	ID        uint        `json:"id"`
+	Username  string      `json:"username"`
+	Password  string      `json:"password"`
+	Role      models.Role `json:"role"`
+	CreatedAt time.Time   `json:"created_at"`
+	UpdatedAt time.Time   `json:"updated_at"`
+}
+
 func (s *Server) syncDataFromLeader() {
 	s.mu.RLock()
 	leaderID := s.leaderID
@@ -126,9 +135,9 @@ func (s *Server) applyOperations(ops []Operation) {
 // Handler para sync interno
 func (s *Server) syncHandler(c *fiber.Ctx) error {
 	type SyncRequest struct {
-		Songs  []models.Song `json:"songs"`
-		Users  []models.User `json:"users"` // Nuevo campo
-		NodeID int           `json:"node_id"`
+		Songs  []models.Song     `json:"songs"`
+		Users  []ReplicationUser `json:"users"` // Nuevo campo
+		NodeID int               `json:"node_id"`
 	}
 
 	var req SyncRequest
@@ -150,8 +159,15 @@ func (s *Server) syncHandler(c *fiber.Ctx) error {
 	log.Printf("Nodo %d sincronizó %d canciones desde nodo %d",
 		s.nodeID, len(req.Songs), req.NodeID)
 
-	for _, user := range req.Users {
-		user.ID = 0
+	for _, repUser := range req.Users {
+		user := models.User{
+			Username:  repUser.Username,
+			Password:  repUser.Password,
+			Role:      repUser.Role,
+			CreatedAt: repUser.CreatedAt,
+			UpdatedAt: repUser.UpdatedAt,
+		}
+
 		if err := s.db.Create(&user).Error; err != nil {
 			log.Printf("Error sincronizando usuario %s: %v", user.Username, err)
 		}
@@ -324,14 +340,24 @@ func (s *Server) replicateUserToFollowers(user models.User, minAcks int) bool {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
+
 			type SyncRequest struct {
-				Users  []models.User `json:"users"`
-				NodeID int           `json:"node_id"`
+				Users  []ReplicationUser `json:"users"`
+				NodeID int               `json:"node_id"`
 			}
+
 			reqBody := SyncRequest{
-				Users:  []models.User{user},
+				Users: []ReplicationUser{{
+					ID:        user.ID,
+					Username:  user.Username,
+					Password:  user.Password,
+					Role:      user.Role,
+					CreatedAt: user.CreatedAt,
+					UpdatedAt: user.UpdatedAt,
+				}},
 				NodeID: s.nodeID,
 			}
+
 			jsonData, _ := json.Marshal(reqBody)
 			url := fmt.Sprintf("http://backend%d:3003/internal/sync", id)
 			client := &http.Client{Timeout: 2 * time.Second}

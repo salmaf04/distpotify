@@ -36,3 +36,13 @@ type User struct {
 	UpdatedAt time.Time      `json:"updated_at"`
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
 }
+
+type OperationLog struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	Index     int64     `gorm:"uniqueIndex;not null" json:"index"`
+	Type      string    `gorm:"not null" json:"type"`
+	Data      []byte    `gorm:"type:jsonb" json:"data"`
+	UserData  []byte    `gorm:"type:jsonb" json:"user_data"`
+	Timestamp int64     `json:"timestamp"`
+	CreatedAt time.Time `json:"created_at"`
+}
