@@ -10,27 +10,22 @@ import (
 	"gorm.io/gorm"
 )
 
+type RegisterInput struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Role     string `json:"role"`
+}
+
 type AuthHandler struct {
 	DB *gorm.DB
 }
 
 var jwtSecret = []byte("super-secret-key-change-this")
 
-func (h *AuthHandler) Register(c *fiber.Ctx) error {
-	var input struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-		Role     string `json:"role"`
-	}
-
-	if err := c.BodyParser(&input); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid input"})
-	}
-
-	// Hash password
+func (h *AuthHandler) CreateUser(input RegisterInput) (*models.User, error) {
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Could not hash password"})
+		return nil, err
 	}
 
 	role := models.RoleUser
@@ -45,7 +40,21 @@ func (h *AuthHandler) Register(c *fiber.Ctx) error {
 	}
 
 	if err := h.DB.Create(&user).Error; err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Username already exists"})
+		return nil, err
+	}
+
+	return &user, nil
+}
+
+func (h *AuthHandler) Register(c *fiber.Ctx) error {
+	var input RegisterInput
+	if err := c.BodyParser(&input); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid input"})
+	}
+
+	user, err := h.CreateUser(input)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Could not create user"})
 	}
 
 	return c.Status(fiber.StatusCreated).JSON(user)

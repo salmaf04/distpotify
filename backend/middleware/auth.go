@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"distributed-systems-project/models"
+	"log"
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
@@ -12,6 +13,8 @@ var jwtSecret = []byte("super-secret-key-change-this")
 
 func Protected() fiber.Handler {
 	return func(c *fiber.Ctx) error {
+		log.Printf("HOLA MUNDO MIDDLEWasdasdARE")
+
 		authHeader := c.Get("Authorization")
 		if authHeader == "" {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Missing Authorization header"})

@@ -11,6 +11,11 @@ func main() {
 	app := fiber.New()
 	rp := proxy.NewReverseProxy("", 8080)
 	// Exporta el handler en core como CreateProxyHandler, no createProxyHandler
-	app.All("/api/*", rp.CreateProxyHandler())
+	// Creas el proxy UNA SOLA VEZ
+	proxyHandler := rp.CreateProxyHandler()
+
+	// Lo usas en varias rutas
+	app.All("/api/*", proxyHandler)
+	app.All("/*", proxyHandler) // catch-all
 	log.Fatal(app.Listen(":8081"))
 }

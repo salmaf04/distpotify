@@ -9,15 +9,17 @@ import (
 type OperationType string
 
 const (
-	OpCreate OperationType = "CREATE"
-	OpUpdate OperationType = "UPDATE"
-	OpDelete OperationType = "DELETE"
+	OpCreate     OperationType = "CREATE"
+	OpCreateUser OperationType = "CREATE_USER"
+	OpUpdate     OperationType = "UPDATE"
+	OpDelete     OperationType = "DELETE"
 )
 
 type Operation struct {
 	Index     int64         `json:"index"`
 	Type      OperationType `json:"type"`
 	Data      models.Song   `json:"data"`
+	UserData  *models.User  `json:"user_data,omitempty"` // Nuevo campo
 	Timestamp int64         `json:"timestamp"`
 }
 
@@ -62,6 +64,26 @@ func (l *OpLog) Append(opType OperationType, data models.Song) int64 {
 
 	l.operations = append(l.operations, op)
 	return newIndex
+}
+
+func (l *OpLog) AppendUser(opType OperationType, data models.User) int64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	op := Operation{
+		Index:     l.startIndex + int64(len(l.operations)),
+		Type:      opType,
+		UserData:  &data,
+		Timestamp: time.Now().UnixNano(),
+	}
+
+	if len(l.operations) >= l.maxSize {
+		l.operations = l.operations[1:]
+		l.startIndex++
+	}
+
+	l.operations = append(l.operations, op)
+	return op.Index
 }
 
 // GetSince devuelve operaciones estrictamente DESPUÉS del índice dado

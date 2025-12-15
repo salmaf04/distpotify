@@ -7,6 +7,7 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -97,6 +98,7 @@ func NewServer(nodeID, apiPort int) *Server {
 	// Migrar modelos
 	err = gormDB.AutoMigrate(
 		&models.Song{},
+		&models.User{},
 	)
 	if err != nil {
 		log.Printf("Error en migración: %v", err)
@@ -154,8 +156,8 @@ func (s *Server) setupRoutes() {
 	// API de canciones
 	api := s.app.Group("/api")
 
-	s.app.Post("/auth/register", s.authHandler.Register)
-	s.app.Post("/auth/login", s.authHandler.Login)
+	s.app.Post("/auth/register", s.registerHandler)
+	s.app.Post("/auth/login", s.loginHandler)
 
 	// Rutas de canciones con redirección automática
 	api.Post("/songs/upload", middleware.Protected(), middleware.AdminOnly(), s.uploadSongHandler)
@@ -400,6 +402,56 @@ func (s *Server) filterSongsHandler(c *fiber.Ctx) error {
 	return s.songHandler.GetSongs(c)
 }
 
+func (s *Server) registerHandler(c *fiber.Ctx) error {
+	log.Printf("ENTRANDO AL REGISTER")
+
+	s.mu.RLock()
+	isLeader := s.isLeader
+	leaderID := s.leaderID
+	s.mu.RUnlock()
+
+	if !isLeader {
+		return c.Status(fiber.StatusTemporaryRedirect).JSON(fiber.Map{
+			"error":       "Write operations must go to leader",
+			"redirect_to": fmt.Sprintf("http://backend%d:3003/auth/register", leaderID),
+			"leader":      leaderID,
+		})
+	}
+
+	var input handlers.RegisterInput
+	if err := c.BodyParser(&input); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid input"})
+	}
+
+	user, err := s.authHandler.CreateUser(input)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	// Replicar
+	s.opLog.AppendUser(OpCreateUser, *user)
+	go s.replicateUserToFollowers(*user, 2)
+
+	return c.Status(fiber.StatusCreated).JSON(user)
+}
+
+func (s *Server) loginHandler(c *fiber.Ctx) error {
+	s.mu.RLock()
+	isLeader := s.isLeader
+	leaderID := s.leaderID
+	s.mu.RUnlock()
+
+	if !isLeader {
+		return c.Status(fiber.StatusTemporaryRedirect).JSON(fiber.Map{
+			"error":       "Auth operations must go to leader",
+			"redirect_to": fmt.Sprintf("http://backend%d:3003/auth/login", leaderID),
+			"leader":      leaderID,
+		})
+	}
+
+	return s.authHandler.Login(c)
+}
+
 // Health handler
 func (s *Server) healthHandler(c *fiber.Ctx) error {
 	// Verificar conexión a DB
@@ -433,4 +485,35 @@ func (s *Server) clusterHandler(c *fiber.Ctx) error {
 		"api_port":  s.apiPort,
 		"service":   "music-api",
 	})
+}
+
+func main() {
+	// Leer configuración
+	nodeID := getEnvAsInt("NODE_ID", 1)
+	apiPort := 3003
+
+	// Crear directorio de almacenamiento si no existe
+	os.MkdirAll("storage/songs", 0755)
+
+	server := NewServer(nodeID, apiPort)
+
+	addr := fmt.Sprintf(":%d", apiPort)
+	log.Printf("=== Music API Réplica %d iniciando ===", nodeID)
+	log.Printf("API: http://0.0.0.0:%d", apiPort)
+	log.Printf("Node ID: %d", nodeID)
+	log.Printf("Storage: ./storage/songs/")
+	log.Printf("===============================\n")
+
+	if err := server.app.Listen(addr); err != nil {
+		log.Fatalf("Error iniciando servidor: %v", err)
+	}
+}
+
+func getEnvAsInt(key string, defaultValue int) int {
+	if value := os.Getenv(key); value != "" {
+		if intValue, err := strconv.Atoi(value); err == nil {
+			return intValue
+		}
+	}
+	return defaultValue
 }

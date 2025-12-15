@@ -127,6 +127,7 @@ func (s *Server) applyOperations(ops []Operation) {
 func (s *Server) syncHandler(c *fiber.Ctx) error {
 	type SyncRequest struct {
 		Songs  []models.Song `json:"songs"`
+		Users  []models.User `json:"users"` // Nuevo campo
 		NodeID int           `json:"node_id"`
 	}
 
@@ -148,6 +149,16 @@ func (s *Server) syncHandler(c *fiber.Ctx) error {
 
 	log.Printf("Nodo %d sincronizó %d canciones desde nodo %d",
 		s.nodeID, len(req.Songs), req.NodeID)
+
+	for _, user := range req.Users {
+		user.ID = 0
+		if err := s.db.Create(&user).Error; err != nil {
+			log.Printf("Error sincronizando usuario %s: %v", user.Username, err)
+		}
+	}
+
+	log.Printf("Nodo %d sincronizó %d usuarios desde nodo %d",
+		s.nodeID, len(req.Users), req.NodeID)
 
 	return c.JSON(fiber.Map{
 		"message": "Sync completed",
@@ -290,5 +301,62 @@ func (s *Server) replicateToFollowers(song models.Song, minAcks int) bool {
 	}
 
 	log.Printf("Replicación completada: %d/%d ACKs recibidos (min requerido: %d)", acksReceived, totalFollowers, minAcks)
+	return acksReceived >= minAcks
+}
+
+func (s *Server) replicateUserToFollowers(user models.User, minAcks int) bool {
+	followers := s.getAllNodeIDs()
+	var targetNodes []int
+	for _, id := range followers {
+		if id != s.nodeID {
+			targetNodes = append(targetNodes, id)
+		}
+	}
+
+	if len(targetNodes) == 0 {
+		return true
+	}
+
+	var wg sync.WaitGroup
+	ackChan := make(chan bool, len(targetNodes))
+
+	for _, nodeID := range targetNodes {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			type SyncRequest struct {
+				Users  []models.User `json:"users"`
+				NodeID int           `json:"node_id"`
+			}
+			reqBody := SyncRequest{
+				Users:  []models.User{user},
+				NodeID: s.nodeID,
+			}
+			jsonData, _ := json.Marshal(reqBody)
+			url := fmt.Sprintf("http://backend%d:3003/internal/sync", id)
+			client := &http.Client{Timeout: 2 * time.Second}
+			resp, err := client.Post(url, "application/json", bytes.NewBuffer(jsonData))
+			if err == nil && resp.StatusCode == http.StatusOK {
+				ackChan <- true
+			} else {
+				ackChan <- false
+			}
+			if resp != nil {
+				resp.Body.Close()
+			}
+		}(nodeID)
+	}
+
+	go func() {
+		wg.Wait()
+		close(ackChan)
+	}()
+
+	acksReceived := 0
+	for success := range ackChan {
+		if success {
+			acksReceived++
+		}
+	}
 	return acksReceived >= minAcks
 }
