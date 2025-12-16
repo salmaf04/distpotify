@@ -15,22 +15,27 @@ func (s *Server) startLeaderElection() {
 		return
 	}
 	myID := s.nodeID
+	myIndex := s.lastAppliedIndex
 	s.mu.Unlock()
 
-	log.Printf("Nodo %d inicia elección (Bully Algorithm)", myID)
+	log.Printf("Nodo %d inicia elección (Bully Modificado - Index: %d)", myID, myIndex)
 
-	// Enviar mensaje ELECTION a todos los nodos con ID mayor
-	higherNodes := s.getHigherNodes()
-	if len(higherNodes) == 0 {
-		// No hay nadie con mayor ID → yo soy el líder
+	allNodes := s.getAllNodeIDs()
+	var targetNodes []int
+	for _, id := range allNodes {
+		if id != myID {
+			targetNodes = append(targetNodes, id)
+		}
+	}
+
+	if len(targetNodes) == 0 {
 		s.declareVictory()
 		return
 	}
 
-	answers := make(chan int, len(higherNodes))
-	timeouts := 0
+	answers := make(chan int, len(targetNodes))
 
-	for _, nodeID := range higherNodes {
+	for _, nodeID := range targetNodes {
 		go func(id int) {
 			if s.sendElectionMessage(id) {
 				answers <- id
@@ -45,25 +50,28 @@ func (s *Server) startLeaderElection() {
 	for {
 		select {
 		case responder := <-answers:
-			log.Printf("Nodo %d recibió ANSWER de nodo %d", myID, responder)
-			// Alguien mayor está vivo → abandono la elección
+			log.Printf("Nodo %d recibió ANSWER de nodo %d (candidato mejor)", myID, responder)
+			// Alguien con mejor criterio respondió -> abandono
 			return
 
 		case <-timer.C:
-			// Timeout: nadie respondió → yo gano
-			if timeouts == 0 { // primera vez que se acaba el tiempo
-				log.Printf("Nodo %d no recibió respuestas → se declara ganador", myID)
-				s.declareVictory()
-			}
+			// Timeout: nadie mejor respondió -> yo gano
+			log.Printf("Nodo %d gana elección por timeout", myID)
+			s.declareVictory()
 			return
 		}
 	}
 }
 
 func (s *Server) sendElectionMessage(targetNodeID int) bool {
+	s.mu.RLock()
+	myIndex := s.lastAppliedIndex
+	s.mu.RUnlock()
+
 	msg := ElectionMessage{
-		Type:   "ELECTION",
-		NodeID: s.nodeID,
+		Type:      "ELECTION",
+		NodeID:    s.nodeID,
+		LastIndex: myIndex,
 	}
 
 	jsonData, _ := json.Marshal(msg)
@@ -94,14 +102,15 @@ func (s *Server) declareVictory() {
 
 func (s *Server) broadcastCoordinator() {
 	allNodes := s.getAllNodeIDs()
-	if allNodes == nil {
-		log.Printf("Nodo %d no pudo obtener lista de nodos para broadcast COORDINATOR", s.nodeID)
-		return
-	}
+
+	s.mu.RLock()
+	myIndex := s.lastAppliedIndex
+	s.mu.RUnlock()
 
 	msg := ElectionMessage{
-		Type:   "COORDINATOR",
-		NodeID: s.nodeID,
+		Type:      "COORDINATOR",
+		NodeID:    s.nodeID,
+		LastIndex: myIndex,
 	}
 	jsonData, _ := json.Marshal(msg)
 
@@ -113,7 +122,6 @@ func (s *Server) broadcastCoordinator() {
 			url := s.nodeURL(id) + "/internal/election"
 			client := &http.Client{Timeout: CoordinationTimeout}
 			client.Post(url, "application/json", bytes.NewBuffer(jsonData))
-			// Ignoramos errores: el nodo caído se enterará después por heartbeat o scanning
 		}(nodeID)
 	}
 

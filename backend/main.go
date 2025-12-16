@@ -47,8 +47,9 @@ const (
 
 // === NUEVO: Mensajes del protocolo Bully ===
 type ElectionMessage struct {
-	Type   string `json:"type"` // "ELECTION", "ANSWER", "COORDINATOR"
-	NodeID int    `json:"node_id"`
+	Type      string `json:"type"` // "ELECTION", "ANSWER", "COORDINATOR"
+	NodeID    int    `json:"node_id"`
+	LastIndex int64  `json:"last_index"` // Nuevo campo para criterio de elección
 }
 
 func (s *Server) nodeURL(nodeID int) string {
@@ -110,6 +111,13 @@ func NewServer(nodeID, apiPort int) *Server {
 	authHandler := &handlers.AuthHandler{DB: gormDB}
 	opLog := NewOpLog(gormDB)
 
+	var lastOp models.OperationLog
+	var lastIndex int64 = 0
+
+	if err := gormDB.Order("index desc").First(&lastOp).Error; err == nil {
+		lastIndex = lastOp.Index
+	}
+
 	// Crear app Fiber
 	app := fiber.New(fiber.Config{
 		AppName:       fmt.Sprintf("Music-Replica-%d", nodeID),
@@ -139,7 +147,7 @@ func NewServer(nodeID, apiPort int) *Server {
 		songHandler:      songHandler,
 		authHandler:      authHandler,
 		opLog:            opLog,
-		lastAppliedIndex: 0,
+		lastAppliedIndex: lastIndex,
 	}
 
 	log.Printf("Me reinicie")
@@ -188,32 +196,40 @@ func (s *Server) electionHandler(c *fiber.Ctx) error {
 
 	switch msg.Type {
 	case "ELECTION":
-		log.Printf("Nodo %d recibió ELECTION de nodo %d", s.nodeID, msg.NodeID)
+		log.Printf("Nodo %d recibió ELECTION de nodo %d (Index: %d)", s.nodeID, msg.NodeID, msg.LastIndex)
 
-		// Responder automáticamente si tengo mayor ID
 		s.mu.RLock()
 		myID := s.nodeID
+		myIndex := s.lastAppliedIndex
 		s.mu.RUnlock()
 
-		if myID > msg.NodeID {
-			// Responder ANSWER
-			resp := ElectionMessage{Type: "ANSWER", NodeID: myID}
+		amIBetter := false
+		if myIndex > msg.LastIndex {
+			amIBetter = true
+		} else if myIndex == msg.LastIndex && myID > msg.NodeID {
+			amIBetter = true
+		}
+
+		if amIBetter {
+			// Responder ANSWER para detener al otro candidato
+			resp := ElectionMessage{
+				Type:      "ANSWER",
+				NodeID:    myID,
+				LastIndex: myIndex,
+			}
 			c.JSON(resp)
 
-			// Y si no estoy en elección, iniciar la mía propia
+			// Iniciar mi propia elección si soy mejor y no soy líder
 			go s.startLeaderElection()
 		}
 
 	case "COORDINATOR":
-		log.Printf("Nodo %d recibe COORDINATOR de %d", s.nodeID, msg.NodeID)
+		log.Printf("Nodo %d recibe COORDINATOR de %d (Index: %d)", s.nodeID, msg.NodeID, msg.LastIndex)
 
 		s.mu.Lock()
-		if msg.NodeID > s.nodeID || s.leaderID < msg.NodeID {
-			// Aceptar siempre si el nuevo líder tiene mayor ID
-			s.leaderID = msg.NodeID
-			s.isLeader = (msg.NodeID == s.nodeID)
-			log.Printf("Nodo %d acepta a %d como líder", s.nodeID, msg.NodeID)
-		}
+		s.leaderID = msg.NodeID
+		s.isLeader = (msg.NodeID == s.nodeID)
+		log.Printf("Nodo %d acepta a %d como líder", s.nodeID, msg.NodeID)
 		s.mu.Unlock()
 	}
 
@@ -356,7 +372,10 @@ func (s *Server) createSongHandler(c *fiber.Ctx) error {
 		}
 
 		newSong.ID = 0
-		s.opLog.Append(OpCreate, newSong)
+		newIndex := s.opLog.Append(OpCreate, newSong)
+		s.mu.Lock()
+		s.lastAppliedIndex = newIndex
+		s.mu.Unlock()
 
 		success := s.replicateToFollowers(newSong, 2)
 
