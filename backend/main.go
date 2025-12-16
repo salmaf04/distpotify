@@ -172,8 +172,8 @@ func (s *Server) setupRoutes() {
 	s.app.Post("/auth/login", s.loginHandler)
 
 	// Rutas de canciones con redirección automática
-	api.Post("/songs/upload", middleware.Protected(), middleware.AdminOnly(), s.uploadSongHandler)
-	api.Post("/songs", middleware.Protected(), middleware.AdminOnly(), s.createSongHandler)
+	api.Post("/songs/upload", middleware.Protected(s.db), middleware.AdminOnly(), s.uploadSongHandler)
+	api.Post("/songs", middleware.Protected(s.db), middleware.AdminOnly(), s.createSongHandler)
 
 	api.Get("/songs", s.getSongsHandler)           // Cualquier réplica
 	api.Get("/songs/:id", s.getSongByIDHandler)    // Cualquier réplica

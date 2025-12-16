@@ -7,11 +7,12 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v5"
+	"gorm.io/gorm"
 )
 
 var jwtSecret = []byte("super-secret-key-change-this")
 
-func Protected() fiber.Handler {
+func Protected(db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		log.Printf("HOLA MUNDO MIDDLEWasdasdARE")
 
@@ -30,6 +31,21 @@ func Protected() fiber.Handler {
 		}
 
 		claims := token.Claims.(jwt.MapClaims)
+		userID := uint(claims["user_id"].(float64))
+		tokenSessionID, _ := claims["session_id"].(string)
+
+		var user models.User
+
+		if err := db.First(&user, userID).Error; err != nil {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "User not found"})
+		}
+
+		if user.SessionID != tokenSessionID {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"error": "Sesión inválida. Se ha iniciado sesión en otro dispositivo.",
+			})
+		}
+
 		c.Locals("user", claims)
 		return c.Next()
 	}

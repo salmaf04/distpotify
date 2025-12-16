@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"distributed-systems-project/models"
+	"fmt"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -30,6 +31,11 @@ func (h *AuthHandler) CreateUser(input RegisterInput) (*models.User, error) {
 
 	role := models.RoleUser
 	if input.Role == "admin" {
+		var count int64
+		h.DB.Model(&models.User{}).Where("role = ?", models.RoleAdmin).Count(&count)
+		if count > 0 {
+			return nil, fiber.NewError(fiber.StatusForbidden, "Ya existe un administrador en el sistema")
+		}
 		role = models.RoleAdmin
 	}
 
@@ -77,6 +83,13 @@ func (h *AuthHandler) Login(c *fiber.Ctx) error {
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(input.Password)); err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid credentials"})
+	}
+
+	sessionID := fmt.Sprintf("%d", time.Now().UnixNano())
+	user.SessionID = sessionID
+
+	if err := h.DB.Save(&user).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Error saving session"})
 	}
 
 	// Generate JWT

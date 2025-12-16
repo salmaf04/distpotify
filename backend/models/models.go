@@ -32,6 +32,7 @@ type User struct {
 	Username  string         `gorm:"uniqueIndex;not null" json:"username"`
 	Password  string         `gorm:"not null" json:"-"` // No devolver password en JSON
 	Role      Role           `gorm:"default:'user'" json:"role"`
+	SessionID string         `json:"-"`
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
