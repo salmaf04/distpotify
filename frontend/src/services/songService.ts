@@ -12,41 +12,41 @@ function parseDurationToSeconds(d?: string): number {
   return 0;
 }
 
-async function fetchSongs(signal?: AbortSignal): Promise<Song[]> {
-  const API_BASE = import.meta.env.VITE_API_URL
+export async function fetchSongs(signal?: AbortSignal): Promise<Song[]> {
+  const API_BASE = import.meta.env.VITE_API_URL; // ej: http://localhost:3000
   const base = API_BASE.replace(/\/$/, '');
   const url = base ? `${base}/api/songs` : '/api/songs';
 
   const resp = await fetch(url, { method: 'GET', signal });
   if (!resp.ok) throw new Error(`Failed to fetch songs: ${resp.status}`);
+  
   const data = await resp.json();
   if (!Array.isArray(data)) return [];
 
   const mapped: Song[] = (data as SongResponse[]).map((s) => {
-    let file = s.file ?? undefined;
+    // Manejo de portada (Cover)
     let cover = s.cover ?? undefined;
-    // backend returns raw base64 without data: prefix; if so, wrap with data URI
-    if (typeof file === 'string' && file.length > 0 && !file.startsWith('data:')) {
-      // assume audio/mpeg for mp3 stored by backend
-      file = `data:audio/mpeg;base64,${file}`;
-    }
-    if (typeof cover === 'string' && cover.length > 0 && !cover.startsWith('data:')) {
-      // attempt jpeg by default
+    if (typeof cover === 'string' && cover.length > 0 && !cover.startsWith('data:') && !cover.startsWith('http')) {
       cover = `data:image/jpeg;base64,${cover}`;
     }
+
+    // LÓGICA DE STREAMING:
+    // Construimos la URL directa al endpoint de Fiber
+    const streamUrl = base 
+      ? `${base}/api/songs/${s.id}/stream` 
+      : `/api/songs/${s.id}/stream`;
+
     return {
       id: String(s.id),
       title: s.title,
-      artist: s.artist ?? 'Artista Desconocido',
-      album: s.album ?? 'Álbum Desconocido',
-      genre: s.genre ?? 'Desconocido',
+      artist: s.artist ?? 'Desconocido',
+      album: s.album ?? 'Desconocido',
+      genre: s.genre ?? 'General',
       duration: parseDurationToSeconds(s.duration),
-      audioUrl: typeof file === 'string' ? file : undefined,
-      coverUrl: typeof cover === 'string' ? cover : undefined,
-    } as Song;
+      coverUrl: cover,
+      audioUrl: streamUrl, 
+    };
   });
 
   return mapped;
 }
-
-export default { fetchSongs };
