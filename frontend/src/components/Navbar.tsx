@@ -15,6 +15,7 @@ import {
   Typography,
 } from "@mui/material";
 import { getDuration } from "../services/metadataService";
+import { useAuth } from "../hooks/useAuth";
 
 interface UploadItem {
   file: File;
@@ -32,9 +33,15 @@ interface NavbarProps {
 }
 
 const Navbar = ({ onSearch, onUpload }: NavbarProps) => {
+  const { user, login, register, logout } = useAuth();
   const [searchQuery, setSearchQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [uploadItems, setUploadItems] = useState<UploadItem[]>([]);
+  const [openLogin, setOpenLogin] = useState(false);
+  const [openRegister, setOpenRegister] = useState(false);
+  const [authUser, setAuthUser] = useState("");
+  const [authPass, setAuthPass] = useState("");
+  const [authRole, setAuthRole] = useState("user");
 
   const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
@@ -55,6 +62,26 @@ const Navbar = ({ onSearch, onUpload }: NavbarProps) => {
       setUploadItems(withDur);
       setOpen(true);
     })();
+  };
+
+  const handleOpenLogin = () => {
+    setAuthUser(''); setAuthPass(''); setOpenLogin(true);
+  };
+
+  const handleLoginSubmit = async () => {
+    const resp = await login(authUser, authPass);
+    if (resp.ok) setOpenLogin(false);
+    else alert('Login falló: ' + (resp.error ?? JSON.stringify(resp.data)));
+  };
+
+  const handleOpenRegister = () => {
+    setAuthUser(''); setAuthPass(''); setAuthRole('user'); setOpenRegister(true);
+  };
+
+  const handleRegisterSubmit = async () => {
+    const resp = await register(authUser, authPass, authRole);
+    if (resp.ok) setOpenRegister(false);
+    else alert('Register falló: ' + (resp.error ?? JSON.stringify(resp.data)));
   };
 
   const handleClose = () => {
@@ -135,33 +162,49 @@ const Navbar = ({ onSearch, onUpload }: NavbarProps) => {
           />
         </Box>
 
-        <Button
-          variant="contained"
-          component="label"
-          startIcon={<IconUpload size={20} />}
-          sx={{
-            bgcolor: 'hsl(var(--primary))',
-            color: 'hsl(var(--primary-foreground))',
-            borderRadius: '500px',
-            textTransform: 'none',
-            fontWeight: 600,
-            px: 3,
-            '&:hover': {
-              bgcolor: 'hsl(141, 73%, 48%)',
-              transform: 'scale(1.02)',
-            },
-            transition: 'var(--transition-smooth)',
-          }}
-        >
-          Subir canción
-          <input
-            type="file"
-            hidden
-            accept="audio/*"
-            multiple
-            onChange={handleFileUpload}
-          />
-        </Button>
+        {user && user.role === 'admin' ? (
+          <Button
+            variant="contained"
+            component="label"
+            startIcon={<IconUpload size={20} />}
+            sx={{
+              bgcolor: 'hsl(var(--primary))',
+              color: 'hsl(var(--primary-foreground))',
+              borderRadius: '500px',
+              textTransform: 'none',
+              fontWeight: 600,
+              px: 3,
+              '&:hover': {
+                bgcolor: 'hsl(141, 73%, 48%)',
+                transform: 'scale(1.02)',
+              },
+              transition: 'var(--transition-smooth)',
+            }}
+          >
+            Subir canción
+            <input
+              type="file"
+              hidden
+              accept="audio/*"
+              multiple
+              onChange={handleFileUpload}
+            />
+          </Button>
+        ) : (
+          <Button onClick={() => user ? alert('Acceso restringido: solo administradores pueden subir canciones') : handleOpenLogin()} variant="outlined">Iniciar sesión</Button>
+        )}
+
+        {user ? (
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <Typography variant="body2">{user.username} ({user.role})</Typography>
+            <Button onClick={() => { logout(); }} size="small">Salir</Button>
+          </Box>
+        ) : (
+          <Box sx={{ display: 'flex', gap: 1 }}>
+            <Button onClick={handleOpenLogin}>Login</Button>
+            <Button onClick={handleOpenRegister}>Register</Button>
+          </Box>
+        )}
         {/* Metadata modal */}
         <Dialog open={open} onClose={handleClose} maxWidth="md" fullWidth>
           <DialogTitle>Editar metadatos de subida</DialogTitle>
@@ -192,6 +235,37 @@ const Navbar = ({ onSearch, onUpload }: NavbarProps) => {
           <DialogActions>
             <Button onClick={handleClose}>Cancelar</Button>
             <Button variant="contained" onClick={handleConfirm}>Confirmar y agregar</Button>
+          </DialogActions>
+        </Dialog>
+
+        {/* Login dialog */}
+        <Dialog open={openLogin} onClose={() => setOpenLogin(false)}>
+          <DialogTitle>Iniciar sesión</DialogTitle>
+          <DialogContent>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, width: 320 }}>
+              <TextField label="Usuario" value={authUser} onChange={(e) => setAuthUser(e.target.value)} />
+              <TextField label="Contraseña" type="password" value={authPass} onChange={(e) => setAuthPass(e.target.value)} />
+            </Box>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setOpenLogin(false)}>Cancelar</Button>
+            <Button variant="contained" onClick={handleLoginSubmit}>Iniciar</Button>
+          </DialogActions>
+        </Dialog>
+
+        {/* Register dialog */}
+        <Dialog open={openRegister} onClose={() => setOpenRegister(false)}>
+          <DialogTitle>Crear cuenta</DialogTitle>
+          <DialogContent>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, width: 320 }}>
+              <TextField label="Usuario" value={authUser} onChange={(e) => setAuthUser(e.target.value)} />
+              <TextField label="Contraseña" type="password" value={authPass} onChange={(e) => setAuthPass(e.target.value)} />
+              <TextField label="Role (admin|user)" value={authRole} onChange={(e) => setAuthRole(e.target.value)} />
+            </Box>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setOpenRegister(false)}>Cancelar</Button>
+            <Button variant="contained" onClick={handleRegisterSubmit}>Crear</Button>
           </DialogActions>
         </Dialog>
       </Toolbar>

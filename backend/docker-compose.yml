@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  db1:
+    image: postgres:15-alpine
+    container_name: postgres_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: musicdb
+      POSTGRES_USER: music
+      POSTGRES_PASSWORD: music
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - app_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U music -d musicdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    image: backend  
+    container_name: backend_app
+    restart: unless-stopped
+    ports:
+      - "3003:3003"
+    environment:
+      # Conexión a PostgreSQL usando el nombre del servicio
+      DATABASE_HOST: db1
+      DATABASE_PORT: 5432
+      DATABASE_NAME: musicdb
+      DATABASE_USER: music
+      DATABASE_PASSWORD: music
+      DATABASE_URL: "postgres://music:music@db1:5432/musicdb"
+
+      # Variables opcionales (ajusta según tu app)
+      APP_PORT: 3003
+      APP_ENV: development
+      GIN_MODE: debug
+    volumes:
+      # Para hot-reload: montar código fuente
+      - ./:/app
+      # Excluir node_modules si es necesario
+      - /app/node_modules
+    depends_on:
+      db1:
+        condition: service_healthy
+    networks:
+      - app_network
+    # Comando para development con hot reload
+    command: air
+    # O usa esto si quieres ejecutar directamente:
+    # command: go run main.go
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  app_network:
+    driver: bridge

@@ -82,6 +82,8 @@ async function uploadFiles(
 
       const prom = new Promise<UploadResult>((resolve, reject) => {
   xhr.open('POST', url, true);
+        // send cookies (session) for backend session-based auth
+        try { xhr.withCredentials = true; } catch {}
         if (signal) {
           signal.addEventListener('abort', () => {
             xhr.abort();
