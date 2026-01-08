@@ -35,6 +35,7 @@ type Server struct {
 	mu               sync.RWMutex
 	songHandler      *handlers.SongHandler
 	authHandler      *handlers.AuthHandler
+	streamHandler    *handlers.StreamHandler
 	opLog            *OpLog
 	lastAppliedIndex int64
 }
@@ -109,6 +110,7 @@ func NewServer(nodeID, apiPort int) *Server {
 	// Crear handler de canciones
 	songHandler := &handlers.SongHandler{DB: gormDB}
 	authHandler := &handlers.AuthHandler{DB: gormDB}
+	streamHandler := &handlers.StreamHandler{DB: gormDB, SongsDir: "storage/songs"}
 	opLog := NewOpLog(gormDB)
 
 	var lastOp models.OperationLog
@@ -146,6 +148,7 @@ func NewServer(nodeID, apiPort int) *Server {
 		leaderID:         0,
 		songHandler:      songHandler,
 		authHandler:      authHandler,
+		streamHandler:    streamHandler,
 		opLog:            opLog,
 		lastAppliedIndex: lastIndex,
 	}
@@ -186,6 +189,8 @@ func (s *Server) setupRoutes() {
 
 	// Sincronización (para uso interno)
 	s.app.Post("/internal/sync", s.syncHandler)
+
+	s.app.Get("/api/stream/:id", s.streamSongHandler)
 }
 
 func (s *Server) electionHandler(c *fiber.Ctx) error {
@@ -423,6 +428,10 @@ func (s *Server) searchSongsHandler(c *fiber.Ctx) error {
 // Handler para filtrado de canciones
 func (s *Server) filterSongsHandler(c *fiber.Ctx) error {
 	return s.songHandler.GetSongs(c)
+}
+
+func (s *Server) streamSongHandler(c *fiber.Ctx) error {
+	return s.streamHandler.StreamSong(c)
 }
 
 func (s *Server) registerHandler(c *fiber.Ctx) error {

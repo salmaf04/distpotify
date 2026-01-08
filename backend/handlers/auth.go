@@ -2,11 +2,10 @@ package handlers
 
 import (
 	"distributed-systems-project/models"
-	"fmt"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
-	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
@@ -85,28 +84,48 @@ func (h *AuthHandler) Login(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid credentials"})
 	}
 
-	sessionID := fmt.Sprintf("%d", time.Now().UnixNano())
-	user.SessionID = sessionID
+	// Generar sesión única
+	sessionID := uuid.New().String()
 
-	if err := h.DB.Save(&user).Error; err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Error saving session"})
+	// Guardar sesión en BD
+	session := models.Session{
+		ID:           sessionID,
+		UserID:       user.ID,
+		IPAddress:    c.IP(),
+		UserAgent:    c.Get("User-Agent"),
+		LastActivity: time.Now(),
+		ExpiresAt:    time.Now().Add(time.Hour * 72),
 	}
 
-	// Generate JWT
-	token := jwt.New(jwt.SigningMethodHS256)
-	claims := token.Claims.(jwt.MapClaims)
-	claims["user_id"] = user.ID
-	claims["username"] = user.Username
-	claims["role"] = user.Role
-	claims["exp"] = time.Now().Add(time.Hour * 72).Unix()
+	if err := h.DB.Create(&session).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Could not create session",
+		})
+	}
 
-	t, err := token.SignedString(jwtSecret)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Could not login"})
+	// Crear cookie o devolver token de sesión
+	c.Cookie(&fiber.Cookie{
+		Name:     "session_id",
+		Value:    sessionID,
+		Expires:  time.Now().Add(time.Hour * 72),
+		HTTPOnly: true,
+		Secure:   false, // Solo HTTPS
+		SameSite: "Strict",
+	})
+
+	// Limpiar datos sensibles
+	userResponse := map[string]interface{}{
+		"id":         user.ID,
+		"username":   user.Username,
+		"role":       user.Role,
+		"created_at": user.CreatedAt,
 	}
 
 	return c.JSON(fiber.Map{
-		"token": t,
-		"user":  user,
+		"message": "Login successful",
+		"user":    userResponse,
+		"session": map[string]interface{}{
+			"expires_at": session.ExpiresAt,
+		},
 	})
 }
