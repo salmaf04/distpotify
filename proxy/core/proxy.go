@@ -47,8 +47,8 @@ func NewReverseProxy(serviceName string, port int) *ReverseProxy {
 		client: &fasthttp.Client{
 			NoDefaultUserAgentHeader: true,
 			DisablePathNormalizing:   true,
-			ReadTimeout:              30 * time.Second,
-			WriteTimeout:             30 * time.Second,
+			ReadTimeout:              60 * time.Second,
+			WriteTimeout:             60 * time.Second,
 			MaxConnsPerHost:          100,
 		},
 		nextID: 1,
@@ -320,6 +320,19 @@ func (rp *ReverseProxy) isWriteOperation(method, path string) bool {
 
 func (rp *ReverseProxy) CreateProxyHandler() fiber.Handler {
 	return func(c *fiber.Ctx) error {
+		// Ensure basic CORS response headers in case middleware didn't handle preflight
+		origin := string(c.Request().Header.Peek("Origin"))
+		if origin != "" {
+			c.Set("Access-Control-Allow-Origin", origin)
+			c.Set("Access-Control-Allow-Credentials", "true")
+			c.Set("Access-Control-Allow-Headers", "Origin, Content-Type, Accept, Authorization, X-Requested-With")
+			c.Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS,PATCH")
+		}
+
+		// Handle preflight immediately
+		if string(c.Request().Header.Method()) == "OPTIONS" {
+			return c.SendStatus(fiber.StatusNoContent)
+		}
 		// Determinar a qué backend redirigir
 		var targetBackend *BackendNode
 		var found bool
@@ -390,7 +403,7 @@ func (rp *ReverseProxy) CreateProxyHandler() fiber.Handler {
 		req.SetBody(c.Request().Body())
 
 		// Ejecutar request
-		if err := rp.client.DoTimeout(req, resp, 10*time.Second); err != nil {
+		if err := rp.client.DoTimeout(req, resp, 60*time.Second); err != nil {
 			log.Printf("Error forwarding request: %v", err)
 			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{
 				"error": "Error connecting to backend",

@@ -44,7 +44,7 @@ func (h *SongHandler) InsertSong(c *fiber.Ctx, songInput *structs.SongInputModel
 	song.ID = 0
 
 	// Timeout para evitar cuelgues si la DB está lenta/caída
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	result := h.DB.WithContext(ctx).Create(&song)
@@ -147,7 +147,9 @@ func (h *SongHandler) UploadSong(c *fiber.Ctx) error {
 
 func (h *SongHandler) GetAllSongs(c *fiber.Ctx) error {
 	var songs []models.Song
-	result := h.DB.Find(&songs)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	result := h.DB.WithContext(ctx).Find(&songs)
 	if result.Error != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": result.Error.Error()})
 	}
@@ -220,7 +222,9 @@ func (h *SongHandler) GetSongByID(c *fiber.Ctx) error {
 	}
 
 	var song models.Song
-	result := h.DB.First(&song, id)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	result := h.DB.WithContext(ctx).First(&song, id)
 	if result.Error != nil {
 		if result.Error == gorm.ErrRecordNotFound {
 			return c.Status(404).JSON(fiber.Map{"error": "Song not found"})
@@ -241,7 +245,10 @@ func (h *SongHandler) GetSongsSearch(c *fiber.Ctx) error {
 
 	searchPattern := "%" + query + "%"
 
-	result := h.DB.Where(
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	result := h.DB.WithContext(ctx).Where(
 		"title ILIKE ? OR artist ILIKE ? OR album ILIKE ?",
 		searchPattern,
 		searchPattern,
@@ -263,7 +270,10 @@ func (h *SongHandler) GetSongs(c *fiber.Ctx) error {
 	}
 
 	var songs []models.Song
-	query := h.DB.Model(&models.Song{})
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	query := h.DB.WithContext(ctx).Model(&models.Song{})
 
 	query = applyFilters(query, filters)
 
@@ -288,7 +298,7 @@ func (h *SongHandler) GetSongs(c *fiber.Ctx) error {
 	}
 
 	var total int64
-	countQuery := h.DB.Model(&models.Song{})
+	countQuery := h.DB.WithContext(ctx).Model(&models.Song{})
 	countQuery = applyFilters(countQuery, filters)
 	countQuery.Count(&total)
 

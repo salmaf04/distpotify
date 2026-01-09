@@ -127,6 +127,8 @@ func NewServer(nodeID, apiPort int) *Server {
 		CaseSensitive: true,
 		StrictRouting: true,
 		BodyLimit:     100 * 1024 * 1024,
+		ReadTimeout:   60 * time.Second,
+		WriteTimeout:  60 * time.Second,
 	})
 
 	// Middleware
