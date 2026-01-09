@@ -40,7 +40,15 @@ func (h *StreamHandler) StreamSong(c *fiber.Ctx) error {
 	}
 
 	// Construir ruta completa del archivo
-	filePath := filepath.Join(h.SongsDir, song.File)
+	var filePath string
+	if filepath.IsAbs(song.File) {
+		filePath = song.File
+	} else if strings.Contains(song.File, "storage/") || strings.Contains(song.File, "storage\\") {
+		filePath = filepath.Join(".", song.File)
+	} else {
+		// song.File suele guardarse como "songs/filename.mp3" o solo "filename.mp3"
+		filePath = filepath.Join("storage", "songs", filepath.Base(song.File))
+	}
 
 	// Verificar que el archivo existe
 	file, err := os.Open(filePath)

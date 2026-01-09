@@ -8,7 +8,10 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -60,12 +63,9 @@ func (s *Server) nodeURL(nodeID int) string {
 // Configuración de conexiones DB
 func getDBConfig(nodeID int) string {
 	// Cada réplica se conecta a su propia DB
-	dbHost := fmt.Sprintf("db%d", nodeID)
 
-	return fmt.Sprintf(
-		"host=%s user=music password=music dbname=musicdb port=5432 sslmode=disable",
-		dbHost,
-	)
+	return "host=localhost user=postgres password=potgres dbname=spotify port=5434 sslmode=disable"
+
 }
 
 func NewServer(nodeID, apiPort int) *Server {
@@ -102,6 +102,7 @@ func NewServer(nodeID, apiPort int) *Server {
 		&models.Song{},
 		&models.User{},
 		&models.OperationLog{},
+		&models.Session{},
 	)
 	if err != nil {
 		log.Printf("Error en migración: %v", err)
@@ -129,9 +130,11 @@ func NewServer(nodeID, apiPort int) *Server {
 
 	// Middleware
 	app.Use(cors.New(cors.Config{
-		AllowOrigins: "*",
-		AllowMethods: "GET,POST,PUT,DELETE,OPTIONS",
-		AllowHeaders: "Content-Type, Authorization, X-Data-Version, X-Node-ID",
+		AllowOrigins:     "http://localhost:5173", // Origen específico
+		AllowMethods:     "GET,POST,PUT,DELETE,OPTIONS",
+		AllowHeaders:     "Content-Type,Authorization,X-Data-Version,X-Node-ID",
+		AllowCredentials: true,         // IMPORTANTE: true cuando usas credentials: 'include'
+		ExposeHeaders:    "Set-Cookie", // Necesario para cookies
 	}))
 
 	app.Use(logger.New(logger.Config{
@@ -190,7 +193,11 @@ func (s *Server) setupRoutes() {
 	// Sincronización (para uso interno)
 	s.app.Post("/internal/sync", s.syncHandler)
 
-	s.app.Get("/api/stream/:id", s.streamSongHandler)
+	// Replicación de archivos MP3
+	s.app.Post("/internal/receive-file", s.receiveFileHandler)
+	s.app.Get("/internal/download-file", s.downloadFileHandler)
+
+	api.Get("/songs/:id/stream", s.streamSongHandler)
 }
 
 func (s *Server) electionHandler(c *fiber.Ctx) error {
@@ -304,7 +311,30 @@ func (s *Server) uploadSongHandler(c *fiber.Ctx) error {
 	}
 
 	// Soy el líder, procesar la subida
-	return s.songHandler.UploadSong(c)
+	result := s.songHandler.UploadSong(c)
+
+	// Si el upload fue exitoso, replicar el archivo MP3 a los followers
+	if c.Response().StatusCode() == fiber.StatusCreated {
+		// Obtener el nombre del archivo que se acaba de guardar
+		_, err := c.FormFile("file")
+		if err == nil {
+			artist := c.FormValue("artist")
+			title := c.FormValue("title")
+
+			// Construir el nombre del archivo como se hace en save_file.go
+			safeArtist := sanitizeFileName(artist)
+			safeTitle := sanitizeFileName(title)
+			filename := fmt.Sprintf("%s-%s.mp3", safeArtist, safeTitle)
+			filePath := filepath.Join("storage/songs", filename)
+
+			// Replicar el archivo a los followers
+			go s.ReplicateFilesToFollowers(filename, filePath)
+
+			log.Printf("Nodo %d (líder): Iniciando replicación del archivo %s", s.nodeID, filename)
+		}
+	}
+
+	return result
 }
 
 // Handler para creación de canción
@@ -431,6 +461,7 @@ func (s *Server) filterSongsHandler(c *fiber.Ctx) error {
 }
 
 func (s *Server) streamSongHandler(c *fiber.Ctx) error {
+	log.Printf("AQUI")
 	return s.streamHandler.StreamSong(c)
 }
 
@@ -517,6 +548,16 @@ func (s *Server) clusterHandler(c *fiber.Ctx) error {
 		"api_port":  s.apiPort,
 		"service":   "music-api",
 	})
+}
+
+// sanitizeFileName limpia el nombre del archivo para evitar caracteres especiales
+func sanitizeFileName(name string) string {
+	reg := regexp.MustCompile(`[<>:"/\\|?*]`)
+	safe := reg.ReplaceAllString(name, "_")
+	if len(safe) > 100 {
+		safe = safe[:100]
+	}
+	return strings.TrimSpace(safe)
 }
 
 func main() {

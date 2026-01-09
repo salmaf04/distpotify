@@ -50,10 +50,9 @@ func SaveFile(c *fiber.Ctx, file *multipart.FileHeader, artist string, title str
 		return "", fmt.Errorf("error al copiar archivo: %v", err)
 	}
 
-	// Guardar ruta relativa en la BD para que sea consistente
-	relativePath := filepath.Join("songs", filename)
-
-	return relativePath, nil
+	// Guardar solo el nombre del archivo
+	// El SongsDir del handler ya es "storage/songs"
+	return filename, nil
 }
 
 func sanitizeFileName(name string) string {

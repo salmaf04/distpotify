@@ -22,6 +22,15 @@ type ReplicationUser struct {
 	UpdatedAt time.Time   `json:"updated_at"`
 }
 
+type ReplicationSession struct {
+	ID           string    `json:"id"`
+	UserID       uint      `json:"user_id"`
+	IPAddress    string    `json:"ip_address"`
+	UserAgent    string    `json:"user_agent"`
+	LastActivity time.Time `json:"last_activity"`
+	ExpiresAt    time.Time `json:"expires_at"`
+}
+
 func (s *Server) syncDataFromLeader() {
 	s.mu.RLock()
 	leaderID := s.leaderID
@@ -68,17 +77,18 @@ func (s *Server) syncDataFromLeader() {
 
 	// Estructura de respuesta
 	var result struct {
-		Songs  []models.Song `json:"songs"`
-		Count  int           `json:"count"`
-		NodeID int           `json:"node_id"`
+		Songs    []models.Song        `json:"songs"`
+		Sessions []ReplicationSession `json:"sessions"`
+		Count    int                  `json:"count"`
+		NodeID   int                  `json:"node_id"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		log.Printf("Error decodificando snapshot de Songs: %v", err)
+		log.Printf("Error decodificando snapshot: %v", err)
 		return
 	}
 
-	log.Printf("Nodo %d recibió snapshot de Songs con %d canciones", s.nodeID, result.Count)
+	log.Printf("Nodo %d recibió snapshot con %d canciones y %d sesiones", s.nodeID, result.Count, len(result.Sessions))
 
 	// Insertar/actualizar en mi DB
 	tx := s.db.Begin()
@@ -87,15 +97,33 @@ func (s *Server) syncDataFromLeader() {
 		return
 	}
 
-	// Opcional: limpiar tabla primero si quieres un mirror exacto
+	// Opcional: limpiar tablas primero si quieres un mirror exacto
 	if err := tx.Exec("DELETE FROM songs").Error; err != nil {
 		log.Printf("Error limpiando tabla songs: %v", err)
 		tx.Rollback()
 		return
 	}
 
+	if err := tx.Exec("DELETE FROM sessions").Error; err != nil {
+		log.Printf("Error limpiando tabla sessions: %v", err)
+		tx.Rollback()
+		return
+	}
+
 	for _, song := range result.Songs {
 		tx.Create(&song)
+	}
+
+	for _, sessData := range result.Sessions {
+		session := models.Session{
+			ID:           sessData.ID,
+			UserID:       sessData.UserID,
+			IPAddress:    sessData.IPAddress,
+			UserAgent:    sessData.UserAgent,
+			LastActivity: sessData.LastActivity,
+			ExpiresAt:    sessData.ExpiresAt,
+		}
+		tx.Create(&session)
 	}
 
 	var synced_songs []models.Song
@@ -111,7 +139,7 @@ func (s *Server) syncDataFromLeader() {
 		return
 	}
 
-	log.Printf("Nodo %d sincronizó %d canciones desde líder %d", s.nodeID, len(result.Songs), leaderID)
+	log.Printf("Nodo %d sincronizó %d canciones y %d sesiones desde líder %d", s.nodeID, len(result.Songs), len(result.Sessions), leaderID)
 }
 
 func (s *Server) applyOperations(ops []Operation) {
@@ -135,9 +163,10 @@ func (s *Server) applyOperations(ops []Operation) {
 // Handler para sync interno
 func (s *Server) syncHandler(c *fiber.Ctx) error {
 	type SyncRequest struct {
-		Songs  []models.Song     `json:"songs"`
-		Users  []ReplicationUser `json:"users"` // Nuevo campo
-		NodeID int               `json:"node_id"`
+		Songs    []models.Song        `json:"songs"`
+		Sessions []ReplicationSession `json:"sessions"`
+		Users    []ReplicationUser    `json:"users"` // Nuevo campo
+		NodeID   int                  `json:"node_id"`
 	}
 
 	var req SyncRequest
@@ -145,7 +174,7 @@ func (s *Server) syncHandler(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	// Procesar sincronización
+	// Procesar sincronización de canciones
 	for _, song := range req.Songs {
 		song.ID = 0
 		// Usar Upsert (crear o actualizar)
@@ -158,6 +187,25 @@ func (s *Server) syncHandler(c *fiber.Ctx) error {
 
 	log.Printf("Nodo %d sincronizó %d canciones desde nodo %d",
 		s.nodeID, len(req.Songs), req.NodeID)
+
+	// Procesar sincronización de sesiones
+	for _, sessData := range req.Sessions {
+		session := models.Session{
+			ID:           sessData.ID,
+			UserID:       sessData.UserID,
+			IPAddress:    sessData.IPAddress,
+			UserAgent:    sessData.UserAgent,
+			LastActivity: sessData.LastActivity,
+			ExpiresAt:    sessData.ExpiresAt,
+		}
+
+		if err := s.db.Create(&session).Error; err != nil {
+			log.Printf("Error sincronizando sesión %s: %v", session.ID, err)
+		}
+	}
+
+	log.Printf("Nodo %d sincronizó %d sesiones desde nodo %d",
+		s.nodeID, len(req.Sessions), req.NodeID)
 
 	for _, repUser := range req.Users {
 		user := models.User{
@@ -177,11 +225,15 @@ func (s *Server) syncHandler(c *fiber.Ctx) error {
 		s.nodeID, len(req.Users), req.NodeID)
 
 	return c.JSON(fiber.Map{
-		"message": "Sync completed",
-		"synced":  len(req.Songs),
-		"node_id": s.nodeID,
+		"message":  "Sync completed",
+		"synced":   len(req.Songs),
+		"sessions": len(req.Sessions),
+		"users":    len(req.Users),
+		"node_id":  s.nodeID,
 	})
 }
+
+// Usar Upsert (crear o actualizar)
 
 func (s *Server) initialSyncAfterJoin() {
 	leaderID := s.discoverLeaderByScanning()
@@ -226,13 +278,14 @@ func (s *Server) songsSnapshotHandler(c *fiber.Ctx) error {
 	s.mu.RUnlock()
 	if !isLeader {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
-			"error":     "Solo el líder puede proveer snapshot de Songs",
+			"error":     "Solo el líder puede proveer snapshot",
 			"node_id":   s.nodeID,
 			"leader_id": s.leaderID,
 			"is_leader": s.isLeader,
 			"action":    "request_snapshot_on_leader",
 		})
 	}
+
 	var songs []models.Song
 	if err := s.db.Find(&songs).Error; err != nil {
 		log.Printf("Error obteniendo snapshot de Songs: %v", err)
@@ -240,10 +293,34 @@ func (s *Server) songsSnapshotHandler(c *fiber.Ctx) error {
 			"error": "Error fetching songs from DB",
 		})
 	}
+
+	// Obtener todas las sesiones activas
+	var sessions []models.Session
+	if err := s.db.Find(&sessions).Error; err != nil {
+		log.Printf("Error obteniendo snapshot de Sessions: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Error fetching sessions from DB",
+		})
+	}
+
+	// Convertir sesiones al formato de replicación
+	var replicationSessions []ReplicationSession
+	for _, sess := range sessions {
+		replicationSessions = append(replicationSessions, ReplicationSession{
+			ID:           sess.ID,
+			UserID:       sess.UserID,
+			IPAddress:    sess.IPAddress,
+			UserAgent:    sess.UserAgent,
+			LastActivity: sess.LastActivity,
+			ExpiresAt:    sess.ExpiresAt,
+		})
+	}
+
 	return c.JSON(fiber.Map{
-		"songs":   songs,
-		"count":   len(songs),
-		"node_id": s.nodeID,
+		"songs":    songs,
+		"sessions": replicationSessions,
+		"count":    len(songs),
+		"node_id":  s.nodeID,
 	})
 }
 
@@ -317,6 +394,82 @@ func (s *Server) replicateToFollowers(song models.Song, minAcks int) bool {
 	}
 
 	log.Printf("Replicación completada: %d/%d ACKs recibidos (min requerido: %d)", acksReceived, totalFollowers, minAcks)
+	return acksReceived >= minAcks
+}
+
+// replicateSessionToFollowers replica una nueva sesión a todos los followers
+func (s *Server) replicateSessionToFollowers(session models.Session, minAcks int) bool {
+	followers := s.getAllNodeIDs()
+
+	// Filtrar mi propio ID
+	var targetNodes []int
+	for _, id := range followers {
+		if id != s.nodeID {
+			targetNodes = append(targetNodes, id)
+		}
+	}
+
+	totalFollowers := len(targetNodes)
+	if totalFollowers == 0 {
+		return true
+	}
+
+	if totalFollowers < minAcks {
+		minAcks = totalFollowers
+	}
+
+	var wg sync.WaitGroup
+	ackChan := make(chan bool, totalFollowers)
+
+	for _, nodeID := range targetNodes {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+
+			type SyncRequest struct {
+				Sessions []ReplicationSession `json:"sessions"`
+				NodeID   int                  `json:"node_id"`
+			}
+
+			reqBody := SyncRequest{
+				Sessions: []ReplicationSession{{
+					ID:           session.ID,
+					UserID:       session.UserID,
+					IPAddress:    session.IPAddress,
+					UserAgent:    session.UserAgent,
+					LastActivity: session.LastActivity,
+					ExpiresAt:    session.ExpiresAt,
+				}},
+				NodeID: s.nodeID,
+			}
+
+			jsonData, _ := json.Marshal(reqBody)
+			url := fmt.Sprintf("http://backend%d:3003/internal/sync", id)
+			client := &http.Client{Timeout: 2 * time.Second}
+			resp, err := client.Post(url, "application/json", bytes.NewBuffer(jsonData))
+			if err == nil && resp.StatusCode == http.StatusOK {
+				ackChan <- true
+			} else {
+				ackChan <- false
+			}
+			if resp != nil {
+				resp.Body.Close()
+			}
+		}(nodeID)
+	}
+
+	go func() {
+		wg.Wait()
+		close(ackChan)
+	}()
+
+	acksReceived := 0
+	for success := range ackChan {
+		if success {
+			acksReceived++
+		}
+	}
+
 	return acksReceived >= minAcks
 }
 
