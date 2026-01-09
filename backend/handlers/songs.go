@@ -53,7 +53,39 @@ func (h *SongHandler) InsertSong(c *fiber.Ctx, songInput *structs.SongInputModel
 		return c.Status(500).JSON(fiber.Map{"error": result.Error.Error()})
 	}
 
+	// Guardar la canción en el contexto para que el handler pueda acceder a ella
+	c.Locals("inserted_song", song)
+
 	return c.Status(201).JSON(song)
+}
+
+// InsertSongDirect inserta la canción sin manejo de respuesta HTTP
+func (h *SongHandler) InsertSongDirect(songInput *structs.SongInputModel) (*models.Song, error) {
+	songInputCover := ""
+
+	if songInput.Cover != nil {
+		songInputCover = *songInput.Cover
+	}
+
+	song := models.Song{
+		Title:    songInput.Title,
+		Artist:   songInput.Artist,
+		Album:    songInput.Album,
+		Genre:    songInput.Genre,
+		Duration: songInput.Duration,
+		File:     songInput.File,
+		Cover:    songInputCover,
+	}
+
+	song.ID = 0
+
+	result := h.DB.Create(&song)
+	if result.Error != nil {
+		log.Printf("InsertSongDirect: error DB Create: %v", result.Error)
+		return nil, result.Error
+	}
+
+	return &song, nil
 }
 
 func (h *SongHandler) UploadSong(c *fiber.Ctx) error {
@@ -99,9 +131,18 @@ func (h *SongHandler) UploadSong(c *fiber.Ctx) error {
 		File:     savedPath,
 	}
 
-	value := h.InsertSong(c, song_to_create)
+	// Usar InsertSongDirect para obtener la canción sin manejo HTTP
+	song, err := h.InsertSongDirect(song_to_create)
+	if err != nil {
+		log.Printf("UploadSong: insert error: %v", err)
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	// Guardar la canción en el contexto para que el handler pueda acceder a ella
+	c.Locals("inserted_song", song)
+
 	log.Println("UploadSong: insert finished")
-	return value
+	return c.Status(201).JSON(song)
 }
 
 func (h *SongHandler) GetAllSongs(c *fiber.Ctx) error {

@@ -18,7 +18,6 @@ import (
 	"distributed-systems-project/handlers"
 	"distributed-systems-project/middleware"
 	"distributed-systems-project/models"
-	"distributed-systems-project/structs"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
@@ -181,7 +180,6 @@ func (s *Server) setupRoutes() {
 
 	// Rutas de canciones con redirección automática
 	api.Post("/songs/upload", middleware.Protected(s.db), middleware.AdminOnly(), s.uploadSongHandler)
-	api.Post("/songs", middleware.Protected(s.db), middleware.AdminOnly(), s.createSongHandler)
 
 	api.Get("/songs", s.getSongsHandler)           // Cualquier réplica
 	api.Get("/songs/:id", s.getSongByIDHandler)    // Cualquier réplica
@@ -315,8 +313,26 @@ func (s *Server) uploadSongHandler(c *fiber.Ctx) error {
 	// Soy el líder, procesar la subida
 	result := s.songHandler.UploadSong(c)
 
-	// Si el upload fue exitoso, replicar el archivo MP3 a los followers
+	// Si el upload fue exitoso, registrar en el operation log y replicar
 	if c.Response().StatusCode() == fiber.StatusCreated {
+		// Obtener la canción que se acaba de insertar desde el contexto
+		insertedSong, ok := c.Locals("inserted_song").(*models.Song)
+		if ok && insertedSong != nil {
+			// Registrar la operación en el oplog
+			newIndex := s.opLog.Append(OpCreate, *insertedSong)
+			s.mu.Lock()
+			s.lastAppliedIndex = newIndex
+			s.mu.Unlock()
+
+			log.Printf("Canción insertada y registrada en oplog: ID=%d, Index=%d", insertedSong.ID, newIndex)
+
+			// Replicar con followers
+			success := s.replicateToFollowers(*insertedSong, 2)
+			if !success {
+				log.Printf("ADVERTENCIA: No se alcanzó el quórum de replicación deseado")
+			}
+		}
+
 		// Obtener el nombre del archivo que se acaba de guardar
 		_, err := c.FormFile("file")
 		if err == nil {
@@ -333,91 +349,6 @@ func (s *Server) uploadSongHandler(c *fiber.Ctx) error {
 			go s.ReplicateFilesToFollowers(filename, filePath)
 
 			log.Printf("Nodo %d (líder): Iniciando replicación del archivo %s", s.nodeID, filename)
-		}
-	}
-
-	return result
-}
-
-// Handler para creación de canción
-func (s *Server) createSongHandler(c *fiber.Ctx) error {
-	s.mu.RLock()
-	isLeader := s.isLeader
-	leaderID := s.leaderID
-	s.mu.RUnlock()
-
-	if !isLeader {
-		// Redirigir al líder
-		log.Printf("Soy nodo %d y estoy redirigiendo a nodo lider %v", s.nodeID, leaderID)
-
-		return c.Status(fiber.StatusTemporaryRedirect).JSON(fiber.Map{
-			"error": "No soy el líder para operaciones de escritura",
-			// Ahora (Puerto interno fijo 3003)
-			"redirect_to":  fmt.Sprintf("http://backend%d:3003/api/songs/upload", leaderID),
-			"current_node": s.nodeID,
-			"leader":       leaderID,
-			"action":       "redirect_to_leader",
-		})
-	}
-
-	// Parsear entrada
-	var songInput struct {
-		Title    string  `json:"title"`
-		Artist   string  `json:"artist"`
-		Album    string  `json:"album"`
-		Genre    string  `json:"genre"`
-		Duration string  `json:"duration"`
-		File     string  `json:"file"`
-		Cover    *string `json:"cover,omitempty"`
-	}
-
-	if err := c.BodyParser(&songInput); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Invalid request body",
-		})
-	}
-
-	// Crear estructura de entrada
-	input := &structs.SongInputModel{
-		Title:    songInput.Title,
-		Artist:   songInput.Artist,
-		Album:    songInput.Album,
-		Genre:    songInput.Genre,
-		Duration: songInput.Duration,
-		File:     songInput.File,
-		Cover:    songInput.Cover,
-	}
-
-	// Insertar canción
-	result := s.songHandler.InsertSong(c, input)
-
-	// Si se insertó correctamente, sincronizar con followers
-	if c.Response().StatusCode() == fiber.StatusCreated {
-		songInputCover := ""
-		if songInput.Cover != nil {
-			songInputCover = *songInput.Cover
-		}
-
-		newSong := models.Song{
-			Title:    input.Title,
-			Artist:   input.Artist,
-			Album:    input.Album,
-			Genre:    input.Genre,
-			Duration: input.Duration,
-			File:     input.File,
-			Cover:    songInputCover,
-		}
-
-		newSong.ID = 0
-		newIndex := s.opLog.Append(OpCreate, newSong)
-		s.mu.Lock()
-		s.lastAppliedIndex = newIndex
-		s.mu.Unlock()
-
-		success := s.replicateToFollowers(newSong, 2)
-
-		if !success {
-			log.Printf("ADVERTENCIA: No se alcanzó el quórum de replicación deseado")
 		}
 	}
 

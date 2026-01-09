@@ -41,29 +41,32 @@ func (s *Server) syncDataFromLeader() {
 		return
 	}
 
-	// 1. INTENTAR DELTA SYNC
-	url := fmt.Sprintf("%s/internal/sync/delta?since=%d", s.nodeURL(leaderID), lastIndex)
-	resp, err := http.Get(url)
+	// 1. INTENTAR DELTA SYNC SOLO SI NO ES PRIMER SYNC (lastIndex > 0)
+	// En el primer sync (lastIndex == 0), hacer snapshot completo para restaurar usuarios, sesiones, y operation_logs
+	if lastIndex > 0 {
+		url := fmt.Sprintf("%s/internal/sync/delta?since=%d", s.nodeURL(leaderID), lastIndex)
+		resp, err := http.Get(url)
 
-	if err == nil && resp.StatusCode == http.StatusOK {
-		var result struct {
-			Operations []Operation `json:"operations"`
-		}
-		if json.NewDecoder(resp.Body).Decode(&result) == nil {
-			log.Printf("Recibidas %d operaciones delta", len(result.Operations))
-			s.applyOperations(result.Operations)
-			return // Éxito
+		if err == nil && resp.StatusCode == http.StatusOK {
+			var result struct {
+				Operations []Operation `json:"operations"`
+			}
+			if json.NewDecoder(resp.Body).Decode(&result) == nil {
+				log.Printf("Recibidas %d operaciones delta", len(result.Operations))
+				s.applyOperations(result.Operations)
+				return // Éxito
+			}
 		}
 	}
 
-	// 2. FALLBACK A SNAPSHOT (Si falla delta o devuelve 409 Conflict)
+	// 2. FALLBACK A SNAPSHOT (Si falla delta, es primer sync, o devuelve 409 Conflict)
 	log.Printf("Delta sync falló o insuficiente. Solicitando Snapshot completo...")
 
 	// Construir URL al endpoint de snapshot del líder
-	url = s.nodeURL(leaderID) + "/internal/songs/snapshot"
+	url := s.nodeURL(leaderID) + "/internal/songs/snapshot"
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err = client.Get(url)
+	resp, err := client.Get(url)
 	if err != nil {
 		log.Printf("Error obteniendo snapshot del líder %d: %v", leaderID, err)
 		return
@@ -75,12 +78,15 @@ func (s *Server) syncDataFromLeader() {
 		return
 	}
 
-	// Estructura de respuesta
+	// Estructura de respuesta expandida
 	var result struct {
-		Songs    []models.Song        `json:"songs"`
-		Sessions []ReplicationSession `json:"sessions"`
-		Count    int                  `json:"count"`
-		NodeID   int                  `json:"node_id"`
+		Songs            []models.Song         `json:"songs"`
+		Sessions         []ReplicationSession  `json:"sessions"`
+		Users            []ReplicationUser     `json:"users"`
+		OperationLogs    []models.OperationLog `json:"operation_logs"`
+		LastAppliedIndex int64                 `json:"last_applied_index"`
+		Count            int                   `json:"count"`
+		NodeID           int                   `json:"node_id"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -88,16 +94,17 @@ func (s *Server) syncDataFromLeader() {
 		return
 	}
 
-	log.Printf("Nodo %d recibió snapshot con %d canciones y %d sesiones", s.nodeID, result.Count, len(result.Sessions))
+	log.Printf("Nodo %d recibió snapshot con %d canciones, %d sesiones, %d usuarios y %d operation logs",
+		s.nodeID, result.Count, len(result.Sessions), len(result.Users), len(result.OperationLogs))
 
-	// Insertar/actualizar en mi DB
+	// Insertar/actualizar en mi DB con transacción
 	tx := s.db.Begin()
 	if tx.Error != nil {
 		log.Printf("Error iniciando transacción para sync: %v", tx.Error)
 		return
 	}
 
-	// Opcional: limpiar tablas primero si quieres un mirror exacto
+	// Limpiar tablas primero para tener un mirror exacto
 	if err := tx.Exec("DELETE FROM songs").Error; err != nil {
 		log.Printf("Error limpiando tabla songs: %v", err)
 		tx.Rollback()
@@ -110,10 +117,45 @@ func (s *Server) syncDataFromLeader() {
 		return
 	}
 
-	for _, song := range result.Songs {
-		tx.Create(&song)
+	if err := tx.Exec("DELETE FROM users").Error; err != nil {
+		log.Printf("Error limpiando tabla users: %v", err)
+		tx.Rollback()
+		return
 	}
 
+	if err := tx.Exec("DELETE FROM operation_logs").Error; err != nil {
+		log.Printf("Error limpiando tabla operation_logs: %v", err)
+		tx.Rollback()
+		return
+	}
+
+	// Insertar canciones
+	for _, song := range result.Songs {
+		if err := tx.Create(&song).Error; err != nil {
+			log.Printf("Error insertando canción %s: %v", song.Title, err)
+			tx.Rollback()
+			return
+		}
+	}
+
+	// Insertar usuarios
+	for _, userData := range result.Users {
+		user := models.User{
+			ID:        userData.ID,
+			Username:  userData.Username,
+			Password:  userData.Password,
+			Role:      userData.Role,
+			CreatedAt: userData.CreatedAt,
+			UpdatedAt: userData.UpdatedAt,
+		}
+		if err := tx.Create(&user).Error; err != nil {
+			log.Printf("Error insertando usuario %s: %v", user.Username, err)
+			tx.Rollback()
+			return
+		}
+	}
+
+	// Insertar sesiones
 	for _, sessData := range result.Sessions {
 		session := models.Session{
 			ID:           sessData.ID,
@@ -123,23 +165,35 @@ func (s *Server) syncDataFromLeader() {
 			LastActivity: sessData.LastActivity,
 			ExpiresAt:    sessData.ExpiresAt,
 		}
-		tx.Create(&session)
+		if err := tx.Create(&session).Error; err != nil {
+			log.Printf("Error insertando sesión: %v", err)
+			tx.Rollback()
+			return
+		}
 	}
 
-	var synced_songs []models.Song
-	if err := s.db.Find(&synced_songs).Error; err != nil {
-		log.Printf("Error obteniendo canciones para sync: %v", err)
-		return
+	// Insertar operation logs
+	for _, opLog := range result.OperationLogs {
+		if err := tx.Create(&opLog).Error; err != nil {
+			log.Printf("Error insertando operation log: %v", err)
+			tx.Rollback()
+			return
+		}
 	}
 
-	log.Printf("Nodo %d sincronizó %d canciones desde líder %d", s.nodeID, len(synced_songs), leaderID)
-
+	// Commit de la transacción
 	if err := tx.Commit().Error; err != nil {
 		log.Printf("Error haciendo commit de sync desde líder: %v", err)
 		return
 	}
 
-	log.Printf("Nodo %d sincronizó %d canciones y %d sesiones desde líder %d", s.nodeID, len(result.Songs), len(result.Sessions), leaderID)
+	// Actualizar el lastAppliedIndex local
+	s.mu.Lock()
+	s.lastAppliedIndex = result.LastAppliedIndex
+	s.mu.Unlock()
+
+	log.Printf("Nodo %d sincronizó correctamente: %d canciones, %d sesiones, %d usuarios, %d operation logs. LastAppliedIndex=%d",
+		s.nodeID, len(result.Songs), len(result.Sessions), len(result.Users), len(result.OperationLogs), result.LastAppliedIndex)
 }
 
 func (s *Server) applyOperations(ops []Operation) {
@@ -275,6 +329,7 @@ func (s *Server) songsSnapshotHandler(c *fiber.Ctx) error {
 	// Solo el líder debería servir este endpoint de verdad
 	s.mu.RLock()
 	isLeader := s.isLeader
+	lastAppliedIndex := s.lastAppliedIndex
 	s.mu.RUnlock()
 	if !isLeader {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
@@ -303,6 +358,24 @@ func (s *Server) songsSnapshotHandler(c *fiber.Ctx) error {
 		})
 	}
 
+	// Obtener todos los usuarios
+	var users []models.User
+	if err := s.db.Find(&users).Error; err != nil {
+		log.Printf("Error obteniendo snapshot de Users: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Error fetching users from DB",
+		})
+	}
+
+	// Obtener todos los operation logs (historial de operaciones)
+	var operationLogs []models.OperationLog
+	if err := s.db.Order("index asc").Find(&operationLogs).Error; err != nil {
+		log.Printf("Error obteniendo snapshot de OperationLogs: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Error fetching operation logs from DB",
+		})
+	}
+
 	// Convertir sesiones al formato de replicación
 	var replicationSessions []ReplicationSession
 	for _, sess := range sessions {
@@ -316,11 +389,27 @@ func (s *Server) songsSnapshotHandler(c *fiber.Ctx) error {
 		})
 	}
 
+	// Convertir usuarios al formato de replicación
+	var replicationUsers []ReplicationUser
+	for _, user := range users {
+		replicationUsers = append(replicationUsers, ReplicationUser{
+			ID:        user.ID,
+			Username:  user.Username,
+			Password:  user.Password,
+			Role:      user.Role,
+			CreatedAt: user.CreatedAt,
+			UpdatedAt: user.UpdatedAt,
+		})
+	}
+
 	return c.JSON(fiber.Map{
-		"songs":    songs,
-		"sessions": replicationSessions,
-		"count":    len(songs),
-		"node_id":  s.nodeID,
+		"songs":              songs,
+		"sessions":           replicationSessions,
+		"users":              replicationUsers,
+		"operation_logs":     operationLogs,
+		"last_applied_index": lastAppliedIndex,
+		"count":              len(songs),
+		"node_id":            s.nodeID,
 	})
 }
 
