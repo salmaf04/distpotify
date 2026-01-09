@@ -26,6 +26,7 @@ const LoginPage: React.FC = () => {
           <TextField label="Usuario" value={username} onChange={(e) => setUsername(e.target.value)} />
           <TextField label="Contraseña" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
           <Button variant="contained" onClick={handleSubmit}>Entrar</Button>
+          <Button variant="outlined" onClick={() => navigate('/register')}>Registrarse</Button>
         </Box>
       </Paper>
     </Box>

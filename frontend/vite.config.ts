@@ -13,6 +13,13 @@ export default defineConfig({
         secure: false,
         rewrite: (path) => path,
       },
+      // backend exposes auth endpoints at /auth (not under /api)
+      '^/auth': {
+        target: 'http://localhost:3003',
+        changeOrigin: true,
+        secure: false,
+        rewrite: (path) => path,
+      },
     },
   },
 })

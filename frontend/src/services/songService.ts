@@ -50,3 +50,5 @@ export async function fetchSongs(signal?: AbortSignal): Promise<Song[]> {
 
   return mapped;
 }
+
+export default { fetchSongs };
