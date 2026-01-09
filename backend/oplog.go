@@ -57,6 +57,8 @@ func (l *OpLog) Append(opType OperationType, data models.Song) int64 {
 		Timestamp: time.Now().UnixNano(),
 	}
 
+	opLog.ID = uint(newIndex)
+
 	l.db.Create(&opLog)
 	return newIndex
 }

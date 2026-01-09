@@ -105,25 +105,27 @@ func (s *Server) syncDataFromLeader() {
 	}
 
 	// Limpiar tablas primero para tener un mirror exacto
-	if err := tx.Exec("DELETE FROM songs").Error; err != nil {
+	// Usar TRUNCATE para reiniciar las secuencias de auto-incremento
+	if err := tx.Exec("TRUNCATE TABLE songs RESTART IDENTITY CASCADE").Error; err != nil {
 		log.Printf("Error limpiando tabla songs: %v", err)
 		tx.Rollback()
 		return
 	}
 
-	if err := tx.Exec("DELETE FROM sessions").Error; err != nil {
+	if err := tx.Exec("TRUNCATE TABLE sessions RESTART IDENTITY CASCADE").Error; err != nil {
 		log.Printf("Error limpiando tabla sessions: %v", err)
 		tx.Rollback()
 		return
 	}
 
-	if err := tx.Exec("DELETE FROM users").Error; err != nil {
+	if err := tx.Exec("TRUNCATE TABLE users RESTART IDENTITY CASCADE").Error; err != nil {
 		log.Printf("Error limpiando tabla users: %v", err)
 		tx.Rollback()
 		return
 	}
 
-	if err := tx.Exec("DELETE FROM operation_logs").Error; err != nil {
+	// Limpiar operation_logs con TRUNCATE para resetear la secuencia
+	if err := tx.Exec("TRUNCATE TABLE operation_logs RESTART IDENTITY CASCADE").Error; err != nil {
 		log.Printf("Error limpiando tabla operation_logs: %v", err)
 		tx.Rollback()
 		return
@@ -178,6 +180,20 @@ func (s *Server) syncDataFromLeader() {
 			log.Printf("Error insertando operation log: %v", err)
 			tx.Rollback()
 			return
+		}
+	}
+
+	// Actualizar las secuencias de auto-increment después de insertar datos
+	// Esto asegura que el siguiente INSERT use un ID mayor al máximo existente
+	if len(result.Songs) > 0 {
+		if err := tx.Exec("SELECT setval('songs_id_seq', COALESCE((SELECT MAX(id) FROM songs), 0) + 1)").Error; err != nil {
+			log.Printf("Error actualizando secuencia songs_id_seq: %v", err)
+		}
+	}
+
+	if len(result.Users) > 0 {
+		if err := tx.Exec("SELECT setval('users_id_seq', COALESCE((SELECT MAX(id) FROM users), 0) + 1)").Error; err != nil {
+			log.Printf("Error actualizando secuencia users_id_seq: %v", err)
 		}
 	}
 
