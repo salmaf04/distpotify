@@ -60,12 +60,13 @@ func (s *Server) nodeURL(nodeID int) string {
 	return fmt.Sprintf("http://backend%d:3003", nodeID)
 }
 
-// Configuración de conexiones DB
 func getDBConfig(nodeID int) string {
-	// Cada réplica se conecta a su propia DB
+	dbHost := fmt.Sprintf("db%d", nodeID)
 
-	return "host=localhost user=postgres password=potgres dbname=spotify port=5434 sslmode=disable"
-
+	return fmt.Sprintf(
+		"host=%s user=music password=music dbname=musicdb port=5432 sslmode=disable",
+		dbHost,
+	)
 }
 
 func NewServer(nodeID, apiPort int) *Server {
