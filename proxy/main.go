@@ -1,16 +1,17 @@
 package main
 
 import (
-	"log"
+	"fmt"
 	"os"
 	proxy "proxy/core" // módulo = proxy, subpaquete = core
+	"strings"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 )
 
 func main() {
-	app := fiber.New(fiber.Config{BodyLimit: 100 * 1024 * 1024,}) // 100 MB
+	app := fiber.New(fiber.Config{BodyLimit: 100 * 1024 * 1024}) // 100 MB
 	// Configurar CORS: permitir origen configurable via env ALLOWED_ORIGINS
 	allowed := os.Getenv("ALLOWED_ORIGINS")
 	if allowed == "" {
@@ -31,5 +32,10 @@ func main() {
 	// Lo usas en varias rutas
 	app.All("/api/*", proxyHandler)
 	app.All("/*", proxyHandler) // catch-all
-	log.Fatal(app.Listen(":8081"))
+	port := os.Getenv("VITE_API_URL")
+	port = strings.Split(port, ":")[2]
+
+	fmt.Printf("Servidor iniciando en %s\n", ":"+port)
+
+	app.Listen(":" + port)
 }
