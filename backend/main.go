@@ -126,6 +126,7 @@ func NewServer(nodeID, apiPort int) *Server {
 		AppName:       fmt.Sprintf("Music-Replica-%d", nodeID),
 		CaseSensitive: true,
 		StrictRouting: true,
+		BodyLimit:     100 * 1024 * 1024,
 	})
 
 	// Middleware
