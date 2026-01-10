@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -385,11 +386,17 @@ func (rp *ReverseProxy) CreateProxyHandler() fiber.Handler {
 		resp := fasthttp.AcquireResponse()
 		defer fasthttp.ReleaseResponse(resp)
 
-		// Construir URL completa
+		if !strings.Contains(path, "auth") {
+			path = "/api" + path
+		}
+
+		// Construir URL completa (enviar la ruta tal cual al backend)
 		targetURL := targetBackend.URL + path
 		if len(c.Request().URI().QueryString()) > 0 {
 			targetURL += "?" + string(c.Request().URI().QueryString())
 		}
+
+		log.Printf("[PROXY] Target URL: %s", targetURL)
 
 		req.SetRequestURI(targetURL)
 		req.Header.SetMethod(method)

@@ -13,9 +13,7 @@ function parseDurationToSeconds(d?: string): number {
 }
 
 export async function fetchSongs(signal?: AbortSignal): Promise<Song[]> {
-  const API_BASE = import.meta.env.VITE_API_URL; // ej: http://localhost:3000
-  const base = API_BASE.replace(/\/$/, '');
-  const url = base ? `${base}/api/songs` : '/api/songs';
+  const url = '/api/songs';
 
   const resp = await fetch(url, { method: 'GET', signal });
   if (!resp.ok) throw new Error(`Failed to fetch songs: ${resp.status}`);
@@ -32,9 +30,7 @@ export async function fetchSongs(signal?: AbortSignal): Promise<Song[]> {
 
     // LÓGICA DE STREAMING:
     // Construimos la URL directa al endpoint de Fiber
-    const streamUrl = base 
-      ? `${base}/api/songs/${s.id}/stream` 
-      : `/api/songs/${s.id}/stream`;
+    const streamUrl = `/api/songs/${s.id}/stream`;
 
     return {
       id: String(s.id),

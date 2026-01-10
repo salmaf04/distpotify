@@ -84,6 +84,13 @@ func (h *AuthHandler) Login(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid credentials"})
 	}
 
+	existingSession := models.Session{}
+	if err := h.DB.Where("user_id = ?", user.ID).First(&existingSession).Error; err == nil {
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+			"error": "User already has an active session",
+		})
+	}
+
 	// Generar sesión única
 	sessionID := uuid.New().String()
 

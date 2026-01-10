@@ -27,19 +27,21 @@ import (
 )
 
 type Server struct {
-	app              *fiber.App
-	db               *gorm.DB
-	sqlDB            *sql.DB
-	nodeID           int
-	apiPort          int
-	isLeader         bool
-	leaderID         int
-	mu               sync.RWMutex
-	songHandler      *handlers.SongHandler
-	authHandler      *handlers.AuthHandler
-	streamHandler    *handlers.StreamHandler
-	opLog            *OpLog
-	lastAppliedIndex int64
+	app                *fiber.App
+	db                 *gorm.DB
+	sqlDB              *sql.DB
+	nodeID             int
+	apiPort            int
+	isLeader           bool
+	leaderID           int
+	mu                 sync.RWMutex
+	songHandler        *handlers.SongHandler
+	authHandler        *handlers.AuthHandler
+	streamHandler      *handlers.StreamHandler
+	opLog              *OpLog
+	lastAppliedIndex   int64
+	isSyncedWithLeader bool         // Indica si está completamente sincronizado con el líder
+	syncMutex          sync.RWMutex // Mutex separado para sincronización
 }
 
 const (
@@ -50,9 +52,10 @@ const (
 
 // === NUEVO: Mensajes del protocolo Bully ===
 type ElectionMessage struct {
-	Type      string `json:"type"` // "ELECTION", "ANSWER", "COORDINATOR"
-	NodeID    int    `json:"node_id"`
-	LastIndex int64  `json:"last_index"` // Nuevo campo para criterio de elección
+	Type          string `json:"type"` // "ELECTION", "ANSWER", "COORDINATOR"
+	NodeID        int    `json:"node_id"`
+	LastIndex     int64  `json:"last_index"`     // Índice del último op log
+	LastTimestamp int64  `json:"last_timestamp"` // Timestamp del último op log para desempates
 }
 
 func (s *Server) nodeURL(nodeID int) string {
@@ -131,6 +134,8 @@ func NewServer(nodeID, apiPort int) *Server {
 		WriteTimeout:  60 * time.Second,
 	})
 
+	log.Printf("HOLA AQUI ESTOY INICIANDO")
+
 	// Middleware
 	app.Use(cors.New(cors.Config{
 		AllowOrigins:     "http://localhost:5173", // Origen específico
@@ -174,7 +179,7 @@ func (s *Server) setupRoutes() {
 	s.app.Get("/health", s.healthHandler)
 	s.app.Get("/cluster", s.clusterHandler)
 
-	// API de canciones
+	// API de canciones y autenticación
 	api := s.app.Group("/api")
 
 	s.app.Post("/auth/register", s.registerHandler)
@@ -200,6 +205,29 @@ func (s *Server) setupRoutes() {
 	s.app.Get("/internal/download-file", s.downloadFileHandler)
 
 	api.Get("/songs/:id/stream", s.streamSongHandler)
+
+	// Endpoint para verificar estado de sincronización
+	s.app.Get("/internal/sync-status", s.syncStatusHandler)
+}
+
+// syncStatusHandler retorna el estado actual de sincronización del nodo
+func (s *Server) syncStatusHandler(c *fiber.Ctx) error {
+	s.syncMutex.RLock()
+	isSynced := s.isSyncedWithLeader
+	s.syncMutex.RUnlock()
+
+	s.mu.RLock()
+	lastIndex, timestamp := s.opLog.GetLastOperationInfo()
+	s.mu.RUnlock()
+
+	return c.JSON(fiber.Map{
+		"node_id":            s.nodeID,
+		"is_leader":          s.isLeader,
+		"leader_id":          s.leaderID,
+		"synced_with_leader": isSynced,
+		"last_index":         lastIndex,
+		"last_timestamp":     timestamp,
+	})
 }
 
 func (s *Server) electionHandler(c *fiber.Ctx) error {
@@ -210,26 +238,36 @@ func (s *Server) electionHandler(c *fiber.Ctx) error {
 
 	switch msg.Type {
 	case "ELECTION":
-		log.Printf("Nodo %d recibió ELECTION de nodo %d (Index: %d)", s.nodeID, msg.NodeID, msg.LastIndex)
+		log.Printf("Nodo %d recibió ELECTION de nodo %d (Index: %d, Timestamp: %d)",
+			s.nodeID, msg.NodeID, msg.LastIndex, msg.LastTimestamp)
 
-		s.mu.RLock()
+		myIndex, myTimestamp := s.opLog.GetLastOperationInfo()
 		myID := s.nodeID
-		myIndex := s.lastAppliedIndex
-		s.mu.RUnlock()
 
+		// Comparación mejorada: Index > Timestamp > NodeID
 		amIBetter := false
 		if myIndex > msg.LastIndex {
+			// Yo tengo más operaciones
 			amIBetter = true
-		} else if myIndex == msg.LastIndex && myID > msg.NodeID {
-			amIBetter = true
+		} else if myIndex == msg.LastIndex {
+			// Mismo número de operaciones, comparar por timestamp
+			if myTimestamp > msg.LastTimestamp {
+				amIBetter = true
+			} else if myTimestamp == msg.LastTimestamp && myID > msg.NodeID {
+				// Mismo timestamp, usar nodeID como desempate
+				amIBetter = true
+			}
 		}
 
 		if amIBetter {
+			log.Printf("Nodo %d es mejor candidato (Index: %d > %d OR Timestamp más reciente)",
+				s.nodeID, myIndex, msg.LastIndex)
 			// Responder ANSWER para detener al otro candidato
 			resp := ElectionMessage{
-				Type:      "ANSWER",
-				NodeID:    myID,
-				LastIndex: myIndex,
+				Type:          "ANSWER",
+				NodeID:        myID,
+				LastIndex:     myIndex,
+				LastTimestamp: myTimestamp,
 			}
 			c.JSON(resp)
 
@@ -238,7 +276,8 @@ func (s *Server) electionHandler(c *fiber.Ctx) error {
 		}
 
 	case "COORDINATOR":
-		log.Printf("Nodo %d recibe COORDINATOR de %d (Index: %d)", s.nodeID, msg.NodeID, msg.LastIndex)
+		log.Printf("Nodo %d recibe COORDINATOR de %d (Index: %d, Timestamp: %d)",
+			s.nodeID, msg.NodeID, msg.LastIndex, msg.LastTimestamp)
 
 		s.mu.Lock()
 		s.leaderID = msg.NodeID
@@ -411,7 +450,7 @@ func (s *Server) registerHandler(c *fiber.Ctx) error {
 	if !isLeader {
 		return c.Status(fiber.StatusTemporaryRedirect).JSON(fiber.Map{
 			"error":       "Write operations must go to leader",
-			"redirect_to": fmt.Sprintf("http://backend%d:3003/auth/register", leaderID),
+			"redirect_to": fmt.Sprintf("http://backend%d:3003/api/auth/register", leaderID),
 			"leader":      leaderID,
 		})
 	}
@@ -442,7 +481,7 @@ func (s *Server) loginHandler(c *fiber.Ctx) error {
 	if !isLeader {
 		return c.Status(fiber.StatusTemporaryRedirect).JSON(fiber.Map{
 			"error":       "Auth operations must go to leader",
-			"redirect_to": fmt.Sprintf("http://backend%d:3003/auth/login", leaderID),
+			"redirect_to": fmt.Sprintf("http://backend%d:3003/api/auth/login", leaderID),
 			"leader":      leaderID,
 		})
 	}

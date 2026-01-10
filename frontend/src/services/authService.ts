@@ -4,10 +4,9 @@ type User = {
   role: string;
 };
 
-const API_BASE = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
 
 async function post(path: string, body: unknown) {
-  const url = API_BASE ? `${API_BASE}${path}` : path;
+  const url = `/api${path}`; // Always use /api prefix for proxy
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

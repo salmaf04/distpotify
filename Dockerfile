@@ -7,6 +7,7 @@ WORKDIR /app
 # =========================
 RUN apk add --no-cache \
     nginx \
+    gettext \  
     tzdata \
     git \
     curl \
