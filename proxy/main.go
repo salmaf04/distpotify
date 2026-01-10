@@ -1,10 +1,8 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	proxy "proxy/core" // módulo = proxy, subpaquete = core
-	"strings"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
@@ -32,10 +30,11 @@ func main() {
 	// Lo usas en varias rutas
 	app.All("/api/*", proxyHandler)
 	app.All("/*", proxyHandler) // catch-all
-	port := os.Getenv("VITE_API_URL")
-	port = strings.Split(port, ":")[2]
-
-	fmt.Printf("Servidor iniciando en %s\n", ":"+port)
+	
+	port := os.Getenv("API_PORT")
+	if port == "" {
+	    port = "8081" // valor por defecto
+	}
 
 	app.Listen(":" + port)
 }
