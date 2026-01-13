@@ -210,6 +210,11 @@ func (s *Server) syncDataFromLeader() {
 
 	log.Printf("Nodo %d sincronizó correctamente: %d canciones, %d sesiones, %d usuarios, %d operation logs. LastAppliedIndex=%d",
 		s.nodeID, len(result.Songs), len(result.Sessions), len(result.Users), len(result.OperationLogs), result.LastAppliedIndex)
+
+	// Marcar como sincronizado
+	s.syncMutex.Lock()
+	s.isSyncedWithLeader = true
+	s.syncMutex.Unlock()
 }
 
 func (s *Server) applyOperations(ops []Operation) {
@@ -227,6 +232,13 @@ func (s *Server) applyOperations(ops []Operation) {
 			s.lastAppliedIndex = op.Index
 		}
 		s.mu.Unlock()
+	}
+
+	// Marcar como sincronizado después de aplicar las operaciones
+	if len(ops) > 0 {
+		s.syncMutex.Lock()
+		s.isSyncedWithLeader = true
+		s.syncMutex.Unlock()
 	}
 }
 
@@ -306,37 +318,57 @@ func (s *Server) syncHandler(c *fiber.Ctx) error {
 // Usar Upsert (crear o actualizar)
 
 func (s *Server) initialSyncAfterJoin() {
+	// Intentar encontrar líder inmediatamente
 	leaderID := s.discoverLeaderByScanning()
-	if leaderID > 0 {
-		s.mu.Lock()
-		s.leaderID = leaderID
-		s.mu.Unlock()
-
-		log.Printf("Nodo %d usará líder %d para initial sync", s.nodeID, leaderID)
-		s.syncDataFromLeader()
-		return
+	if leaderID == 0 {
+		// Si no hay líder aún, esperar a que se establezca uno
+		leaderID = s.waitForLeader(30 * time.Second)
 	}
 
-	timeout := time.After(30 * time.Second)
+	// Iniciar loop de sincronización periódica
+	s.continuousSyncWithLeader()
+}
+
+// waitForLeader espera hasta encontrar un líder o timeout
+func (s *Server) waitForLeader(timeout time.Duration) int {
+	deadline := time.After(timeout)
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-timeout:
-			log.Printf("Nodo %d: timeout esperando líder para initial sync", s.nodeID)
-			return
+		case <-deadline:
+			log.Printf("Nodo %d: timeout esperando líder", s.nodeID)
+			return 0
 		case <-ticker.C:
 			s.mu.RLock()
-			leaderID = s.leaderID
+			leaderID := s.leaderID
 			isLeader := s.isLeader
 			s.mu.RUnlock()
 
 			if leaderID > 0 && !isLeader {
-				log.Printf("Nodo %d detectó líder %d, iniciando initial sync...", s.nodeID, leaderID)
-				s.syncDataFromLeader()
-				return
+				log.Printf("Nodo %d detectó líder %d", s.nodeID, leaderID)
+				return leaderID
 			}
+		}
+	}
+}
+
+// continuousSyncWithLeader realiza sincronización periódica con el líder
+func (s *Server) continuousSyncWithLeader() {
+	syncTicker := time.NewTicker(10 * time.Second)
+	defer syncTicker.Stop()
+
+	for range syncTicker.C {
+		s.mu.RLock()
+		leaderID := s.leaderID
+		isLeader := s.isLeader
+		s.mu.RUnlock()
+
+		// Solo los followers necesitan sincronizarse periódicamente
+		if !isLeader && leaderID > 0 {
+			log.Printf("Nodo %d realiza sincronización periódica con líder %d", s.nodeID, leaderID)
+			s.syncDataFromLeader()
 		}
 	}
 }

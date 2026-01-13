@@ -247,13 +247,16 @@ func (s *Server) electionHandler(c *fiber.Ctx) error {
 		// Comparación mejorada: Index > Timestamp > NodeID
 		amIBetter := false
 		if myIndex > msg.LastIndex {
+			log.Printf("[BULLY] SOY MEJOR QUE TU Nodo con operaciones")
 			// Yo tengo más operaciones
 			amIBetter = true
 		} else if myIndex == msg.LastIndex {
 			// Mismo número de operaciones, comparar por timestamp
 			if myTimestamp > msg.LastTimestamp {
+				log.Printf("[BULLY] SOY MEJOR QUE TU Nodo con timestamp")
 				amIBetter = true
 			} else if myTimestamp == msg.LastTimestamp && myID > msg.NodeID {
+				log.Printf("[BULLY] SOY MEJOR QUE TU Nodo con id %d vs %d", myID, msg.NodeID)
 				// Mismo timestamp, usar nodeID como desempate
 				amIBetter = true
 			}

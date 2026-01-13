@@ -29,12 +29,8 @@ func (h *AuthHandler) CreateUser(input RegisterInput) (*models.User, error) {
 	}
 
 	role := models.RoleUser
+
 	if input.Role == "admin" {
-		var count int64
-		h.DB.Model(&models.User{}).Where("role = ?", models.RoleAdmin).Count(&count)
-		if count > 0 {
-			return nil, fiber.NewError(fiber.StatusForbidden, "Ya existe un administrador en el sistema")
-		}
 		role = models.RoleAdmin
 	}
 

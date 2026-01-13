@@ -130,3 +130,16 @@ func (l *OpLog) GetSince(index int64) ([]Operation, bool) {
 
 	return ops, true
 }
+
+// GetLastOperationInfo retorna el índice y timestamp de la última operación
+// para usarse en comparaciones de elección de líder
+func (l *OpLog) GetLastOperationInfo() (index int64, timestamp int64) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	var lastOp models.OperationLog
+	if err := l.db.Order("index desc").First(&lastOp).Error; err != nil {
+		return 0, 0
+	}
+	return lastOp.Index, lastOp.Timestamp
+}
