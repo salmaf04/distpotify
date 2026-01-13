@@ -261,9 +261,11 @@ func (s *Server) syncHandler(c *fiber.Ctx) error {
 		song.ID = 0
 		// Usar Upsert (crear o actualizar)
 		result := s.db.Create(&song)
-
 		if result.Error != nil {
 			log.Printf("Error sincronizando canción %s: %v", song.Title, result.Error)
+		} else {
+			s.opLog.Append(OpCreate, song)
+
 		}
 	}
 
@@ -297,6 +299,8 @@ func (s *Server) syncHandler(c *fiber.Ctx) error {
 			CreatedAt: repUser.CreatedAt,
 			UpdatedAt: repUser.UpdatedAt,
 		}
+
+		s.opLog.AppendUser(OpCreateUser, user)
 
 		if err := s.db.Create(&user).Error; err != nil {
 			log.Printf("Error sincronizando usuario %s: %v", user.Username, err)
