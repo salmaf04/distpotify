@@ -107,6 +107,10 @@ func (h *AuthHandler) Login(c *fiber.Ctx) error {
 		})
 	}
 
+	if h.OnSessionCreated != nil {
+		h.OnSessionCreated(session) // Esto llamará al OpLog en el main
+	}
+
 	// Crear cookie o devolver token de sesión
 	c.Cookie(&fiber.Cookie{
 		Name:     "session_id",
