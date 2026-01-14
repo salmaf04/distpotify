@@ -39,7 +39,6 @@ type Server struct {
 	authHandler        *handlers.AuthHandler
 	streamHandler      *handlers.StreamHandler
 	opLog              *OpLog
-	lastAppliedIndex   int64
 	isSyncedWithLeader bool         // Indica si está completamente sincronizado con el líder
 	syncMutex          sync.RWMutex // Mutex separado para sincronización
 }
@@ -150,18 +149,17 @@ func NewServer(nodeID, apiPort int) *Server {
 	}))
 
 	server := &Server{
-		app:              app,
-		db:               gormDB,
-		sqlDB:            sqlDB,
-		nodeID:           nodeID,
-		apiPort:          apiPort,
-		isLeader:         false,
-		leaderID:         0,
-		songHandler:      songHandler,
-		authHandler:      authHandler,
-		streamHandler:    streamHandler,
-		opLog:            opLog,
-		lastAppliedIndex: lastIndex,
+		app:           app,
+		db:            gormDB,
+		sqlDB:         sqlDB,
+		nodeID:        nodeID,
+		apiPort:       apiPort,
+		isLeader:      false,
+		leaderID:      0,
+		songHandler:   songHandler,
+		authHandler:   authHandler,
+		streamHandler: streamHandler,
+		opLog:         opLog,
 	}
 
 	log.Printf("Me reinicie")
@@ -396,9 +394,6 @@ func (s *Server) uploadSongHandler(c *fiber.Ctx) error {
 		if ok && insertedSong != nil {
 			// Registrar la operación en el oplog
 			newIndex := s.opLog.Append(OpCreate, *insertedSong)
-			s.mu.Lock()
-			s.lastAppliedIndex = newIndex
-			s.mu.Unlock()
 
 			log.Printf("Canción insertada y registrada en oplog: ID=%d, Index=%d", insertedSong.ID, newIndex)
 

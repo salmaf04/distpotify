@@ -36,7 +36,7 @@ type ReplicationSession struct {
 func (s *Server) syncDataFromLeader() {
 	s.mu.RLock()
 	leaderID := s.leaderID
-	lastIndex := s.lastAppliedIndex
+	lastIndex, _ := s.opLog.GetLastOperationInfo()
 	s.mu.RUnlock()
 
 	if leaderID <= 0 {
@@ -238,12 +238,30 @@ func (s *Server) applyOperations(ops []Operation) {
 			}
 		}
 
-		// Actualizar índice local de forma segura
-		s.mu.Lock()
-		if op.Index > s.lastAppliedIndex {
-			s.lastAppliedIndex = op.Index
+		jsonData, _ := json.Marshal(op.Data)
+		var userJson []byte
+		if op.UserData != nil {
+			userJson, _ = json.Marshal(op.UserData)
 		}
-		s.mu.Unlock()
+
+		opLogEntry := models.OperationLog{
+			ID:        uint(op.Index), // Forzamos que el ID sea igual al Index para consistencia total
+			Index:     op.Index,       // El Index original del líder
+			Type:      string(op.Type),
+			Data:      jsonData,
+			UserData:  userJson,
+			Timestamp: op.Timestamp,
+		}
+
+		// Usar Upsert (OnConflict DoNothing) para insertar en operation_logs
+		// Esto garantiza que si ya tenemos este log, no se duplique ni falle
+		if err := s.db.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "index"}}, // Clave única es el Index
+			DoNothing: true,                             // Si ya existe, es idéntico (logs inmutables)
+		}).Create(&opLogEntry).Error; err != nil {
+			log.Printf("Error replicando OpLog %d: %v", op.Index, err)
+		}
+
 	}
 
 	// Marcar como sincronizado después de aplicar las operaciones
@@ -284,11 +302,6 @@ func (s *Server) syncHandler(c *fiber.Ctx) error {
 
 		if result.Error != nil {
 			log.Printf("Error sincronizando canción %s: %v", song.Title, result.Error)
-		} else {
-			// Solo añadir al opLog si realmente se insertó (RowsAffected > 0)
-			// O si queremos mantener el log consistente, lo añadimos igual,
-			// pero el opLog también debería ser idempotente por Index.
-			s.opLog.Append(OpCreate, song)
 		}
 	}
 
@@ -404,7 +417,7 @@ func (s *Server) songsSnapshotHandler(c *fiber.Ctx) error {
 	// Solo el líder debería servir este endpoint de verdad
 	s.mu.RLock()
 	isLeader := s.isLeader
-	lastAppliedIndex := s.lastAppliedIndex
+	lastAppliedIndex, _ := s.opLog.GetLastOperationInfo()
 	s.mu.RUnlock()
 	if !isLeader {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
