@@ -504,6 +504,8 @@ func (s *Server) registerHandler(c *fiber.Ctx) error {
 }
 
 func (s *Server) loginHandler(c *fiber.Ctx) error {
+	log.Printf("ENTRANDO AL LOGIN")
+
 	s.mu.RLock()
 	isLeader := s.isLeader
 	leaderID := s.leaderID
@@ -517,7 +519,47 @@ func (s *Server) loginHandler(c *fiber.Ctx) error {
 		})
 	}
 
-	return s.authHandler.Login(c)
+	user, session, err := s.authHandler.Login(c)
+	if err != nil {
+		switch err.Error() {
+		case "user already has an active session":
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+				"error": "User already has an active session",
+			})
+		default:
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid credentials"})
+		}
+	}
+
+	// Replicar sesión a followers
+	s.opLog.AppendSession(OpCreateSession, *session)
+	go s.replicateSessionToFollowers(*session, 2)
+
+	// Crear cookie
+	c.Cookie(&fiber.Cookie{
+		Name:     "session_id",
+		Value:    session.ID,
+		Expires:  session.ExpiresAt,
+		HTTPOnly: true,
+		Secure:   false, // Cambiar a true en producción con HTTPS
+		SameSite: "Strict",
+	})
+
+	// Limpiar datos sensibles del usuario
+	userResponse := map[string]interface{}{
+		"id":         user.ID,
+		"username":   user.Username,
+		"role":       user.Role,
+		"created_at": user.CreatedAt,
+	}
+
+	return c.JSON(fiber.Map{
+		"message": "Login successful",
+		"user":    userResponse,
+		"session": map[string]interface{}{
+			"expires_at": session.ExpiresAt,
+		},
+	})
 }
 
 // Health handler

@@ -52,6 +52,7 @@ func (l *OpLog) AppendSession(opType OperationType, data models.Session) int64 {
 	jsonData, _ := json.Marshal(data)
 
 	opLog := models.OperationLog{
+		ID:          uint(newIndex),
 		Index:       newIndex,
 		Type:        string(opType),
 		SessionData: jsonData, // Asegúrate de tener este campo en el modelo DB o usar Data genérico
@@ -77,6 +78,7 @@ func (l *OpLog) Append(opType OperationType, data models.Song) int64 {
 	jsonData, _ := json.Marshal(data)
 
 	opLog := models.OperationLog{
+		ID:        uint(newIndex),
 		Index:     newIndex,
 		Type:      string(opType),
 		Data:      jsonData,
@@ -102,6 +104,7 @@ func (l *OpLog) AppendUser(opType OperationType, data models.User) int64 {
 	jsonData, _ := json.Marshal(data)
 
 	opLog := models.OperationLog{
+		ID:        uint(newIndex),
 		Index:     newIndex,
 		Type:      string(opType),
 		UserData:  jsonData,

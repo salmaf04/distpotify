@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"distributed-systems-project/models"
+	"fmt"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -62,30 +63,28 @@ func (h *AuthHandler) Register(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(user)
 }
 
-func (h *AuthHandler) Login(c *fiber.Ctx) error {
+func (h *AuthHandler) Login(c *fiber.Ctx) (*models.User, *models.Session, error) {
 	var input struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
 
 	if err := c.BodyParser(&input); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid input"})
+		return nil, nil, err
 	}
 
 	var user models.User
 	if err := h.DB.Where("username = ?", input.Username).First(&user).Error; err != nil {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid credentials"})
+		return nil, nil, err
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(input.Password)); err != nil {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid credentials"})
+		return nil, nil, err
 	}
 
 	existingSession := models.Session{}
 	if err := h.DB.Where("user_id = ?", user.ID).First(&existingSession).Error; err == nil {
-		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
-			"error": "User already has an active session",
-		})
+		return nil, nil, fmt.Errorf("user already has an active session")
 	}
 
 	// Generar sesión única
@@ -102,38 +101,11 @@ func (h *AuthHandler) Login(c *fiber.Ctx) error {
 	}
 
 	if err := h.DB.Create(&session).Error; err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Could not create session",
-		})
+		return nil, nil, err
 	}
 
-	if h.OnSessionCreated != nil {
-		h.OnSessionCreated(session) // Esto llamará al OpLog en el main
-	}
+	// Crear cookie (esto lo manejará el handler principal)
+	// La cookie se creará en el Server.loginHandler
 
-	// Crear cookie o devolver token de sesión
-	c.Cookie(&fiber.Cookie{
-		Name:     "session_id",
-		Value:    sessionID,
-		Expires:  time.Now().Add(time.Hour * 72),
-		HTTPOnly: true,
-		Secure:   false, // Solo HTTPS
-		SameSite: "Strict",
-	})
-
-	// Limpiar datos sensibles
-	userResponse := map[string]interface{}{
-		"id":         user.ID,
-		"username":   user.Username,
-		"role":       user.Role,
-		"created_at": user.CreatedAt,
-	}
-
-	return c.JSON(fiber.Map{
-		"message": "Login successful",
-		"user":    userResponse,
-		"session": map[string]interface{}{
-			"expires_at": session.ExpiresAt,
-		},
-	})
+	return &user, &session, nil
 }
