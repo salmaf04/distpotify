@@ -204,6 +204,7 @@ func (s *Server) setupRoutes() {
 	s.app.Get("/internal/download-file", s.downloadFileHandler)
 
 	api.Get("/songs/:id/stream", s.streamSongHandler)
+	s.app.Post("/internal/reconcile", s.reconcileHandler)
 
 	// Endpoint para verificar estado de sincronización
 	s.app.Get("/internal/sync-status", s.syncStatusHandler)
