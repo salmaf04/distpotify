@@ -112,9 +112,17 @@ func NewServer(nodeID, apiPort int) *Server {
 
 	// Crear handler de canciones
 	songHandler := &handlers.SongHandler{DB: gormDB}
-	authHandler := &handlers.AuthHandler{DB: gormDB}
 	streamHandler := &handlers.StreamHandler{DB: gormDB, SongsDir: "storage/songs"}
 	opLog := NewOpLog(gormDB)
+
+	authHandler := &handlers.AuthHandler{
+		DB: gormDB,
+		OnSessionCreated: func(session models.Session) {
+			// Callback: Cuando alguien se loguea, escribimos en el OpLog
+			// Necesitamos un nuevo tipo de operación OpCreateSession
+			opLog.AppendSession(OpCreateSession, session)
+		},
+	}
 
 	// Crear app Fiber
 	app := fiber.New(fiber.Config{

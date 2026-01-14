@@ -212,6 +212,10 @@ func (s *Server) syncDataFromLeader() {
 		log.Printf("Error actualizando seq op_logs: %v", err)
 	}
 
+	if err := tx.Exec("SELECT setval('sessions_id_seq', COALESCE((SELECT MAX(id) FROM sessions), 1))").Error; err != nil {
+		log.Printf("Error actualizando seq op_logs: %v", err)
+	}
+
 	// Commit de la transacción
 	if err := tx.Commit().Error; err != nil {
 		log.Printf("Error haciendo commit de sync desde líder: %v", err)
@@ -244,21 +248,34 @@ func (s *Server) applyOperations(ops []Operation) {
 					DoUpdates: clause.AssignmentColumns([]string{"username", "password", "role"}),
 				}).Create(op.UserData)
 			}
+		case OpCreateSession:
+			if op.SessionData != nil {
+				s.db.Clauses(clause.OnConflict{
+					Columns:   []clause.Column{{Name: "id"}},
+					DoUpdates: clause.AssignmentColumns([]string{"last_activity", "expires_at", "ip_address"}),
+				}).Create(op.SessionData)
+			}
 		}
 
 		jsonData, _ := json.Marshal(op.Data)
 		var userJson []byte
+		var sessionJson []byte
+
 		if op.UserData != nil {
 			userJson, _ = json.Marshal(op.UserData)
 		}
+		if op.SessionData != nil {
+			sessionJson, _ = json.Marshal(op.SessionData)
+		}
 
 		opLogEntry := models.OperationLog{
-			ID:        uint(op.Index), // Forzamos que el ID sea igual al Index para consistencia total
-			Index:     op.Index,       // El Index original del líder
-			Type:      string(op.Type),
-			Data:      jsonData,
-			UserData:  userJson,
-			Timestamp: op.Timestamp,
+			ID:          uint(op.Index), // Forzamos que el ID sea igual al Index para consistencia total
+			Index:       op.Index,       // El Index original del líder
+			Type:        string(op.Type),
+			Data:        jsonData,
+			UserData:    userJson,
+			SessionData: sessionJson,
+			Timestamp:   op.Timestamp,
 		}
 
 		// Usar Upsert (OnConflict DoNothing) para insertar en operation_logs
@@ -275,6 +292,7 @@ func (s *Server) applyOperations(ops []Operation) {
 	go func() {
 		s.db.Exec("SELECT setval('songs_id_seq', COALESCE((SELECT MAX(id) FROM songs), 1))")
 		s.db.Exec("SELECT setval('users_id_seq', COALESCE((SELECT MAX(id) FROM users), 1))")
+		s.db.Exec("SELECT setval('sessions_id_seq', COALESCE((SELECT MAX(id) FROM users), 1))")
 		// IMPORTANTE: operation_logs
 		s.db.Exec("SELECT setval('operation_logs_id_seq', COALESCE((SELECT MAX(id) FROM operation_logs), 1))")
 	}()

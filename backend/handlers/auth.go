@@ -17,7 +17,8 @@ type RegisterInput struct {
 }
 
 type AuthHandler struct {
-	DB *gorm.DB
+	DB               *gorm.DB
+	OnSessionCreated func(session models.Session)
 }
 
 var jwtSecret = []byte("super-secret-key-change-this")

@@ -12,18 +12,20 @@ import (
 type OperationType string
 
 const (
-	OpCreate     OperationType = "CREATE"
-	OpCreateUser OperationType = "CREATE_USER"
-	OpUpdate     OperationType = "UPDATE"
-	OpDelete     OperationType = "DELETE"
+	OpCreate        OperationType = "CREATE"
+	OpCreateUser    OperationType = "CREATE_USER"
+	OpUpdate        OperationType = "UPDATE"
+	OpDelete        OperationType = "DELETE"
+	OpCreateSession OperationType = "CREATE_SESSION"
 )
 
 type Operation struct {
-	Index     int64         `json:"index"`
-	Type      OperationType `json:"type"`
-	Data      models.Song   `json:"data"`
-	UserData  *models.User  `json:"user_data,omitempty"` // Nuevo campo
-	Timestamp int64         `json:"timestamp"`
+	Index       int64           `json:"index"`
+	Type        OperationType   `json:"type"`
+	Data        models.Song     `json:"data"`
+	UserData    *models.User    `json:"user_data,omitempty"`    // Nuevo campo
+	SessionData *models.Session `json:"session_data,omitempty"` // Nuevo campo
+	Timestamp   int64           `json:"timestamp"`
 }
 
 type OpLog struct {
@@ -35,6 +37,30 @@ func NewOpLog(db *gorm.DB) *OpLog {
 	return &OpLog{
 		db: db,
 	}
+}
+
+func (l *OpLog) AppendSession(opType OperationType, data models.Session) int64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	var lastOp models.OperationLog
+	var newIndex int64 = 1
+	if err := l.db.Order("index desc").First(&lastOp).Error; err == nil {
+		newIndex = lastOp.Index + 1
+	}
+
+	jsonData, _ := json.Marshal(data)
+
+	opLog := models.OperationLog{
+		Index:       newIndex,
+		Type:        string(opType),
+		SessionData: jsonData, // Asegúrate de tener este campo en el modelo DB o usar Data genérico
+		Timestamp:   time.Now().UnixNano(),
+	}
+
+	opLog.ID = uint(newIndex)
+	l.db.Create(&opLog)
+	return newIndex
 }
 
 func (l *OpLog) Append(opType OperationType, data models.Song) int64 {
@@ -109,6 +135,7 @@ func (l *OpLog) GetSince(index int64) ([]Operation, bool) {
 	for i, log := range logs {
 		var song models.Song
 		var user *models.User
+		var session *models.Session
 
 		if len(log.Data) > 0 {
 			json.Unmarshal(log.Data, &song)
@@ -118,13 +145,19 @@ func (l *OpLog) GetSince(index int64) ([]Operation, bool) {
 			json.Unmarshal(log.UserData, &u)
 			user = &u
 		}
+		if len(log.SessionData) > 0 { // Asumiendo columna nueva
+			s := models.Session{}
+			json.Unmarshal(log.SessionData, &s)
+			session = &s
+		}
 
 		ops[i] = Operation{
-			Index:     log.Index,
-			Type:      OperationType(log.Type),
-			Data:      song,
-			UserData:  user,
-			Timestamp: log.Timestamp,
+			Index:       log.Index,
+			Type:        OperationType(log.Type),
+			Data:        song,
+			UserData:    user,
+			SessionData: session,
+			Timestamp:   log.Timestamp,
 		}
 	}
 
