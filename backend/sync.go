@@ -749,3 +749,155 @@ func (s *Server) replicateUserToFollowers(user models.User, minAcks int) bool {
 	}
 	return acksReceived >= minAcks
 }
+
+func (s *Server) triggerReconciliation(targetNodeID int) {
+	log.Printf("CONFLICTO RESOLUTION: Iniciando reconciliación con el líder ganador %d...", targetNodeID)
+
+	// 1. Recolectar datos locales
+	var songs []models.Song
+	if err := s.db.Find(&songs).Error; err != nil {
+		log.Printf("Error leyendo canciones para reconciliación: %v", err)
+		return
+	}
+
+	var users []models.User
+	if err := s.db.Find(&users).Error; err != nil {
+		log.Printf("Error leyendo usuarios para reconciliación: %v", err)
+		return
+	}
+
+	var sessions []models.Session
+	if err := s.db.Find(&sessions).Error; err != nil {
+		log.Printf("Error leyendo sesiones para reconciliación: %v", err)
+		return
+	}
+
+	// 2. Convertir a estructuras de transporte (para evitar problemas con preloading/json)
+	var repUsers []ReplicationUser
+	for _, u := range users {
+		repUsers = append(repUsers, ReplicationUser{
+			ID:        u.ID,
+			Username:  u.Username,
+			Password:  u.Password,
+			Role:      u.Role,
+			CreatedAt: u.CreatedAt,
+			UpdatedAt: u.UpdatedAt,
+		})
+	}
+
+	var repSessions []ReplicationSession
+	for _, sess := range sessions {
+		repSessions = append(repSessions, ReplicationSession{
+			ID:           sess.ID,
+			UserID:       sess.UserID,
+			IPAddress:    sess.IPAddress,
+			UserAgent:    sess.UserAgent,
+			LastActivity: sess.LastActivity,
+			ExpiresAt:    sess.ExpiresAt,
+		})
+	}
+
+	payload := map[string]interface{}{
+		"songs":    songs,
+		"users":    repUsers,
+		"sessions": repSessions,
+		"node_id":  s.nodeID,
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("Error marshalling reconciliation data: %v", err)
+		return
+	}
+
+	// 3. Enviar al líder ganador
+	url := fmt.Sprintf("%s/internal/reconcile", s.nodeURL(targetNodeID))
+	client := &http.Client{Timeout: 30 * time.Second} // Timeout largo para transferencia de datos
+	resp, err := client.Post(url, "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		log.Printf("Error enviando datos de reconciliación: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		log.Printf("Reconciliación enviada con éxito al nodo %d. Mis datos no se perderán.", targetNodeID)
+	} else {
+		log.Printf("Fallo en reconciliación, status: %d", resp.StatusCode)
+	}
+}
+
+// reconcileHandler recibe datos de un nodo perdedor y los integra
+func (s *Server) reconcileHandler(c *fiber.Ctx) error {
+	type ReconcileRequest struct {
+		Songs    []models.Song        `json:"songs"`
+		Sessions []ReplicationSession `json:"sessions"`
+		Users    []ReplicationUser    `json:"users"`
+		NodeID   int                  `json:"node_id"`
+	}
+
+	var req ReconcileRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	log.Printf("Procesando RECONCILIACIÓN del nodo %d (%d songs, %d users, %d sessions)",
+		req.NodeID, len(req.Songs), len(req.Users), len(req.Sessions))
+
+	// Procesar Canciones (Upsert + OpLog)
+	for _, song := range req.Songs {
+		// Upsert: Si existe por ID, actualiza campos. Si no, crea.
+		if err := s.db.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "id"}},
+			DoUpdates: clause.AssignmentColumns([]string{"title", "artist", "duration", "file_path", "album", "genre", "updated_at"}),
+		}).Create(&song).Error; err != nil {
+			log.Printf("Error reconciliando canción %d: %v", song.ID, err)
+			continue
+		}
+		// IMPORTANTE: Generar OpLog para que esto se replique a otros nodos
+		s.opLog.Append(OpCreate, song)
+	}
+
+	// Procesar Usuarios (Upsert + OpLog)
+	for _, rUser := range req.Users {
+		user := models.User{
+			ID:        rUser.ID,
+			Username:  rUser.Username,
+			Password:  rUser.Password,
+			Role:      rUser.Role,
+			CreatedAt: rUser.CreatedAt,
+			UpdatedAt: rUser.UpdatedAt,
+		}
+		if err := s.db.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "id"}},
+			DoUpdates: clause.AssignmentColumns([]string{"username", "password", "role", "updated_at"}),
+		}).Create(&user).Error; err != nil {
+			log.Printf("Error reconciliando usuario %d: %v", user.ID, err)
+			continue
+		}
+		s.opLog.AppendUser(OpCreateUser, user)
+	}
+
+	// Procesar Sesiones (Upsert + OpLog)
+	for _, sess := range req.Sessions {
+		session := models.Session{
+			ID:           sess.ID,
+			UserID:       sess.UserID,
+			IPAddress:    sess.IPAddress,
+			UserAgent:    sess.UserAgent,
+			LastActivity: sess.LastActivity,
+			ExpiresAt:    sess.ExpiresAt,
+		}
+		if err := s.db.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "id"}},
+			DoUpdates: clause.AssignmentColumns([]string{"last_activity", "expires_at", "ip_address"}),
+		}).Create(&session).Error; err != nil {
+			log.Printf("Error reconciliando sesión %s: %v", session.ID, err)
+			continue
+		}
+		s.opLog.AppendSession(OpCreateSession, session)
+	}
+
+	log.Printf("Reconciliación completada. Datos fusionados exitosamente.")
+	return c.SendStatus(fiber.StatusOK)
+}

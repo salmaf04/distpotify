@@ -306,6 +306,7 @@ func (s *Server) electionHandler(c *fiber.Ctx) error {
 				return c.SendStatus(fiber.StatusOK)
 			} else {
 				log.Printf("CONFLICTO: El líder %d es mejor que yo. Renuncio al liderazgo.", msg.NodeID)
+				s.triggerReconciliation(msg.NodeID)
 				// Dejamos continuar el código para que acepte al nuevo líder abajo
 			}
 		}
