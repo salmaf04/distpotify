@@ -116,13 +116,6 @@ func NewServer(nodeID, apiPort int) *Server {
 	streamHandler := &handlers.StreamHandler{DB: gormDB, SongsDir: "storage/songs"}
 	opLog := NewOpLog(gormDB)
 
-	var lastOp models.OperationLog
-	var lastIndex int64 = 0
-
-	if err := gormDB.Order("index desc").First(&lastOp).Error; err == nil {
-		lastIndex = lastOp.Index
-	}
-
 	// Crear app Fiber
 	app := fiber.New(fiber.Config{
 		AppName:       fmt.Sprintf("Music-Replica-%d", nodeID),

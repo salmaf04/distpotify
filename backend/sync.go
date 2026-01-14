@@ -205,11 +205,6 @@ func (s *Server) syncDataFromLeader() {
 		return
 	}
 
-	// Actualizar el lastAppliedIndex local
-	s.mu.Lock()
-	s.lastAppliedIndex = result.LastAppliedIndex
-	s.mu.Unlock()
-
 	log.Printf("Nodo %d sincronizó correctamente: %d canciones, %d sesiones, %d usuarios, %d operation logs. LastAppliedIndex=%d",
 		s.nodeID, len(result.Songs), len(result.Sessions), len(result.Users), len(result.OperationLogs), result.LastAppliedIndex)
 
