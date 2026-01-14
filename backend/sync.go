@@ -72,6 +72,9 @@ func (s *Server) syncDataFromLeader() {
 			if json.NewDecoder(resp.Body).Decode(&result) == nil {
 				log.Printf("Recibidas %d operaciones delta", len(result.Operations))
 				s.applyOperations(result.Operations)
+				// === CORRECCIÓN AQUÍ ===
+				// Iniciar descarga de archivos faltantes en segundo plano tras el delta
+				go s.SyncMissingFilesFromLeader()
 				return // Éxito
 			}
 		}
@@ -229,6 +232,8 @@ func (s *Server) syncDataFromLeader() {
 	s.syncMutex.Lock()
 	s.isSyncedWithLeader = true
 	s.syncMutex.Unlock()
+
+	go s.SyncMissingFilesFromLeader()
 }
 
 func (s *Server) applyOperations(ops []Operation) {

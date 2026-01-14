@@ -4,6 +4,7 @@ import (
 	"distributed-systems-project/models"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -33,6 +34,7 @@ func (h *StreamHandler) StreamSong(c *fiber.Ctx) error {
 	// Obtener metadatos de la canción desde PostgreSQL
 	var song models.Song
 	if err := h.DB.First(&song, songID).Error; err != nil {
+		log.Print("NO ENCONTRE")
 		if err == gorm.ErrRecordNotFound {
 			return c.Status(404).JSON(fiber.Map{"error": "Canción no encontrada"})
 		}
@@ -53,6 +55,7 @@ func (h *StreamHandler) StreamSong(c *fiber.Ctx) error {
 	// Verificar que el archivo existe
 	file, err := os.Open(filePath)
 	if err != nil {
+		log.Print("ARCHIVO NOOOOOOOOOOOOOOoo")
 		return c.Status(404).JSON(fiber.Map{"error": "Archivo de audio no encontrado"})
 	}
 	defer file.Close()
