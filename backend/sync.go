@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"gorm.io/gorm/clause"
+
 	"github.com/gofiber/fiber/v2"
 )
 
@@ -221,12 +223,22 @@ func (s *Server) applyOperations(ops []Operation) {
 	for _, op := range ops {
 		switch op.Type {
 		case OpCreate:
-			s.db.Create(&op.Data) // Usar Clauses(OnConflict) es mejor
-			// case OpUpdate: ...
-			// case OpDelete: ...
+			// CORRECCIÓN: Usar Upsert aquí también
+			s.db.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "id"}},
+				DoUpdates: clause.AssignmentColumns([]string{"title", "artist", "duration", "file_path"}),
+			}).Create(&op.Data)
+
+		case OpCreateUser:
+			if op.UserData != nil {
+				s.db.Clauses(clause.OnConflict{
+					Columns:   []clause.Column{{Name: "id"}},
+					DoUpdates: clause.AssignmentColumns([]string{"username", "password", "role"}),
+				}).Create(op.UserData)
+			}
 		}
 
-		// Actualizar índice local
+		// Actualizar índice local de forma segura
 		s.mu.Lock()
 		if op.Index > s.lastAppliedIndex {
 			s.lastAppliedIndex = op.Index
@@ -258,14 +270,25 @@ func (s *Server) syncHandler(c *fiber.Ctx) error {
 
 	// Procesar sincronización de canciones
 	for _, song := range req.Songs {
-		song.ID = 0
-		// Usar Upsert (crear o actualizar)
-		result := s.db.Create(&song)
+		// ERROR ORIGINAL: song.ID = 0  <-- BORRAR ESTA LÍNEA
+		// Debemos respetar el ID que viene del líder
+
+		// CORRECCIÓN: Usar Upsert (OnConflict)
+		// Si el ID ya existe, no hacemos nada (DoNothing) o actualizamos.
+		// Como es un log inmutable de creación, DoNothing suele bastar,
+		// pero UpdateAll asegura consistencia si hubo cambios.
+		result := s.db.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "id"}},                                                                    // Conflicto por ID
+			DoUpdates: clause.AssignmentColumns([]string{"title", "artist", "duration", "file_path", "album", "genre"}), // Actualizar campos
+		}).Create(&song)
+
 		if result.Error != nil {
 			log.Printf("Error sincronizando canción %s: %v", song.Title, result.Error)
 		} else {
+			// Solo añadir al opLog si realmente se insertó (RowsAffected > 0)
+			// O si queremos mantener el log consistente, lo añadimos igual,
+			// pero el opLog también debería ser idempotente por Index.
 			s.opLog.Append(OpCreate, song)
-
 		}
 	}
 

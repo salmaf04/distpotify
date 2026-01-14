@@ -279,9 +279,40 @@ func (s *Server) electionHandler(c *fiber.Ctx) error {
 		}
 
 	case "COORDINATOR":
-		log.Printf("Nodo %d recibe COORDINATOR de %d (Index: %d, Timestamp: %d)",
-			s.nodeID, msg.NodeID, msg.LastIndex, msg.LastTimestamp)
+		// === NUEVA LÓGICA DE RECONCILIACIÓN ===
+		s.mu.RLock()
+		isCurrentLeader := s.isLeader
+		s.mu.RUnlock()
 
+		// Si yo soy líder y recibo un aviso de OTRO líder, hay conflicto
+		if isCurrentLeader && msg.NodeID != s.nodeID {
+			myIndex, myTimestamp := s.opLog.GetLastOperationInfo()
+
+			amIBetter := false
+			// Usamos la misma lógica de "quién es mejor" que en ELECTION
+			if myIndex > msg.LastIndex {
+				amIBetter = true
+			} else if myIndex == msg.LastIndex {
+				if myTimestamp > msg.LastTimestamp {
+					amIBetter = true
+				} else if myTimestamp == msg.LastTimestamp && s.nodeID > msg.NodeID {
+					amIBetter = true
+				}
+			}
+
+			if amIBetter {
+				log.Printf("CONFLICTO: Ignoro al líder %d porque yo (%d) soy mejor. Me impongo.", msg.NodeID, s.nodeID)
+				// Reenviamos nuestro COORDINATOR para que el otro se entere y renuncie él
+				go s.broadcastCoordinator()
+				return c.SendStatus(fiber.StatusOK)
+			} else {
+				log.Printf("CONFLICTO: El líder %d es mejor que yo. Renuncio al liderazgo.", msg.NodeID)
+				// Dejamos continuar el código para que acepte al nuevo líder abajo
+			}
+		}
+		// === FIN NUEVA LÓGICA ===
+
+		// Lógica original de aceptación
 		s.mu.Lock()
 		s.leaderID = msg.NodeID
 		s.isLeader = (msg.NodeID == s.nodeID)
@@ -306,6 +337,7 @@ func (s *Server) startHeartbeatMonitor() {
 		if isLeader {
 			// El líder solo hace log
 			log.Printf("Líder %d activo - heartbeat en el hearbeat de verdad", s.nodeID)
+			go s.broadcastCoordinator()
 			continue
 		}
 
