@@ -33,6 +33,22 @@ type ReplicationSession struct {
 	ExpiresAt    time.Time `json:"expires_at"`
 }
 
+func (s *Server) fixSequences() {
+	// Arreglar secuencia de Songs
+	s.db.Exec("SELECT setval('songs_id_seq', (SELECT MAX(id) FROM songs));")
+
+	// Arreglar secuencia de Users
+	s.db.Exec("SELECT setval('users_id_seq', (SELECT MAX(id) FROM users));")
+
+	// Arreglar secuencia de OperationLogs (IMPORTANTE)
+	s.db.Exec("SELECT setval('operation_logs_id_seq', (SELECT MAX(id) FROM operation_logs));")
+
+	// Arreglar secuencia de Sessions (si aplica)
+	s.db.Exec("SELECT setval('sessions_id_seq', (SELECT MAX(id) FROM sessions));")
+
+	log.Println("Secuencias de DB actualizadas correctamente tras sincronización.")
+}
+
 func (s *Server) syncDataFromLeader() {
 	s.mu.RLock()
 	leaderID := s.leaderID
@@ -185,18 +201,15 @@ func (s *Server) syncDataFromLeader() {
 		}
 	}
 
-	// Actualizar las secuencias de auto-increment después de insertar datos
-	// Esto asegura que el siguiente INSERT use un ID mayor al máximo existente
-	if len(result.Songs) > 0 {
-		if err := tx.Exec("SELECT setval('songs_id_seq', COALESCE((SELECT MAX(id) FROM songs), 0) + 1)").Error; err != nil {
-			log.Printf("Error actualizando secuencia songs_id_seq: %v", err)
-		}
+	if err := tx.Exec("SELECT setval('songs_id_seq', COALESCE((SELECT MAX(id) FROM songs), 1))").Error; err != nil {
+		log.Printf("Error actualizando seq songs: %v", err)
 	}
-
-	if len(result.Users) > 0 {
-		if err := tx.Exec("SELECT setval('users_id_seq', COALESCE((SELECT MAX(id) FROM users), 0) + 1)").Error; err != nil {
-			log.Printf("Error actualizando secuencia users_id_seq: %v", err)
-		}
+	if err := tx.Exec("SELECT setval('users_id_seq', COALESCE((SELECT MAX(id) FROM users), 1))").Error; err != nil {
+		log.Printf("Error actualizando seq users: %v", err)
+	}
+	// NUEVO: Arreglar secuencia de operation_logs
+	if err := tx.Exec("SELECT setval('operation_logs_id_seq', COALESCE((SELECT MAX(id) FROM operation_logs), 1))").Error; err != nil {
+		log.Printf("Error actualizando seq op_logs: %v", err)
 	}
 
 	// Commit de la transacción
@@ -258,6 +271,13 @@ func (s *Server) applyOperations(ops []Operation) {
 		}
 
 	}
+
+	go func() {
+		s.db.Exec("SELECT setval('songs_id_seq', COALESCE((SELECT MAX(id) FROM songs), 1))")
+		s.db.Exec("SELECT setval('users_id_seq', COALESCE((SELECT MAX(id) FROM users), 1))")
+		// IMPORTANTE: operation_logs
+		s.db.Exec("SELECT setval('operation_logs_id_seq', COALESCE((SELECT MAX(id) FROM operation_logs), 1))")
+	}()
 
 	// Marcar como sincronizado después de aplicar las operaciones
 	if len(ops) > 0 {
