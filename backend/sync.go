@@ -296,67 +296,82 @@ func (s *Server) syncDataFromLeader() {
 		return
 	}
 
-	// Insertar canciones
-	for _, song := range result.Songs {
-		if err := tx.Create(&song).Error; err != nil {
-			log.Printf("Error insertando canción %s: %v", song.Title, err)
-			tx.Rollback()
-			return
+	if result.Songs != nil {
+		// Insertar canciones
+		for _, song := range result.Songs {
+			if err := tx.Create(&song).Error; err != nil {
+				log.Printf("Error insertando canción %s: %v", song.Title, err)
+				tx.Rollback()
+				return
+			}
 		}
+		if err := tx.Exec("SELECT setval('songs_id_seq', COALESCE((SELECT MAX(id) FROM songs), 1))").Error; err != nil {
+			log.Printf("Error actualizando seq songs: %v", err)
+		}
+
 	}
 
-	// Insertar usuarios
-	for _, userData := range result.Users {
-		user := models.User{
-			ID:        userData.ID,
-			Username:  userData.Username,
-			Password:  userData.Password,
-			Role:      userData.Role,
-			CreatedAt: userData.CreatedAt,
-			UpdatedAt: userData.UpdatedAt,
+	if result.Users != nil {
+		// Insertar usuarios
+		for _, userData := range result.Users {
+			user := models.User{
+				ID:        userData.ID,
+				Username:  userData.Username,
+				Password:  userData.Password,
+				Role:      userData.Role,
+				CreatedAt: userData.CreatedAt,
+				UpdatedAt: userData.UpdatedAt,
+			}
+			if err := tx.Create(&user).Error; err != nil {
+				log.Printf("Error insertando usuario %s: %v", user.Username, err)
+				tx.Rollback()
+				return
+			}
 		}
-		if err := tx.Create(&user).Error; err != nil {
-			log.Printf("Error insertando usuario %s: %v", user.Username, err)
-			tx.Rollback()
-			return
+
+		if err := tx.Exec("SELECT setval('users_id_seq', COALESCE((SELECT MAX(id) FROM users), 1))").Error; err != nil {
+			log.Printf("Error actualizando seq users: %v", err)
 		}
+
 	}
 
-	// Insertar sesiones
-	for _, sessData := range result.Sessions {
-		session := models.Session{
-			ID:           sessData.ID,
-			UserID:       sessData.UserID,
-			IPAddress:    sessData.IPAddress,
-			UserAgent:    sessData.UserAgent,
-			LastActivity: sessData.LastActivity,
-			ExpiresAt:    sessData.ExpiresAt,
+	if result.Sessions != nil {
+
+		// Insertar sesiones
+		for _, sessData := range result.Sessions {
+			session := models.Session{
+				ID:           sessData.ID,
+				UserID:       sessData.UserID,
+				IPAddress:    sessData.IPAddress,
+				UserAgent:    sessData.UserAgent,
+				LastActivity: sessData.LastActivity,
+				ExpiresAt:    sessData.ExpiresAt,
+			}
+			if err := tx.Create(&session).Error; err != nil {
+				log.Printf("Error insertando sesión: %v", err)
+				tx.Rollback()
+				return
+			}
 		}
-		if err := tx.Create(&session).Error; err != nil {
-			log.Printf("Error insertando sesión: %v", err)
-			tx.Rollback()
-			return
-		}
+
 	}
 
-	// Insertar operation logs
-	for _, opLog := range result.OperationLogs {
-		if err := tx.Create(&opLog).Error; err != nil {
-			log.Printf("Error insertando operation log: %v", err)
-			tx.Rollback()
-			return
-		}
-	}
+	if result.OperationLogs != nil {
 
-	if err := tx.Exec("SELECT setval('songs_id_seq', COALESCE((SELECT MAX(id) FROM songs), 1))").Error; err != nil {
-		log.Printf("Error actualizando seq songs: %v", err)
-	}
-	if err := tx.Exec("SELECT setval('users_id_seq', COALESCE((SELECT MAX(id) FROM users), 1))").Error; err != nil {
-		log.Printf("Error actualizando seq users: %v", err)
-	}
-	// NUEVO: Arreglar secuencia de operation_logs
-	if err := tx.Exec("SELECT setval('operation_logs_id_seq', COALESCE((SELECT MAX(id) FROM operation_logs), 1))").Error; err != nil {
-		log.Printf("Error actualizando seq op_logs: %v", err)
+		// Insertar operation logs
+		for _, opLog := range result.OperationLogs {
+			if err := tx.Create(&opLog).Error; err != nil {
+				log.Printf("Error insertando operation log: %v", err)
+				tx.Rollback()
+				return
+			}
+		}
+
+		// NUEVO: Arreglar secuencia de operation_logs
+		if err := tx.Exec("SELECT setval('operation_logs_id_seq', COALESCE((SELECT MAX(id) FROM operation_logs), 1))").Error; err != nil {
+			log.Printf("Error actualizando seq op_logs: %v", err)
+		}
+
 	}
 
 	// Commit de la transacción
