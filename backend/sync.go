@@ -388,46 +388,16 @@ func (s *Server) syncHandler(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	// Procesar sincronización de canciones
 	for _, song := range req.Songs {
-		// ERROR ORIGINAL: song.ID = 0  <-- BORRAR ESTA LÍNEA
-		// Debemos respetar el ID que viene del líder
+		s.opLog.Append(OpCreate, song)
 
-		// CORRECCIÓN: Usar Upsert (OnConflict)
-		// Si el ID ya existe, no hacemos nada (DoNothing) o actualizamos.
-		// Como es un log inmutable de creación, DoNothing suele bastar,
-		// pero UpdateAll asegura consistencia si hubo cambios.
-		result := s.db.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "id"}},                                                                    // Conflicto por ID
-			DoUpdates: clause.AssignmentColumns([]string{"title", "artist", "duration", "file_path", "album", "genre"}), // Actualizar campos
-		}).Create(&song)
-
-		if result.Error != nil {
-			log.Printf("Error sincronizando canción %s: %v", song.Title, result.Error)
+		if err := s.db.Create(&song).Error; err != nil {
+			log.Printf("Error sincronizando usuario %s: %v", song.Title, err)
 		}
 	}
 
 	log.Printf("Nodo %d sincronizó %d canciones desde nodo %d",
 		s.nodeID, len(req.Songs), req.NodeID)
-
-	// Procesar sincronización de sesiones
-	for _, sessData := range req.Sessions {
-		session := models.Session{
-			ID:           sessData.ID,
-			UserID:       sessData.UserID,
-			IPAddress:    sessData.IPAddress,
-			UserAgent:    sessData.UserAgent,
-			LastActivity: sessData.LastActivity,
-			ExpiresAt:    sessData.ExpiresAt,
-		}
-
-		if err := s.db.Create(&session).Error; err != nil {
-			log.Printf("Error sincronizando sesión %s: %v", session.ID, err)
-		}
-	}
-
-	log.Printf("Nodo %d sincronizó %d sesiones desde nodo %d",
-		s.nodeID, len(req.Sessions), req.NodeID)
 
 	for _, repUser := range req.Users {
 		user := models.User{
@@ -447,6 +417,25 @@ func (s *Server) syncHandler(c *fiber.Ctx) error {
 
 	log.Printf("Nodo %d sincronizó %d usuarios desde nodo %d",
 		s.nodeID, len(req.Users), req.NodeID)
+
+	// Procesar sincronización de sesiones
+	for _, sessData := range req.Sessions {
+		session := models.Session{
+			ID:           sessData.ID,
+			UserID:       sessData.UserID,
+			IPAddress:    sessData.IPAddress,
+			UserAgent:    sessData.UserAgent,
+			LastActivity: sessData.LastActivity,
+			ExpiresAt:    sessData.ExpiresAt,
+		}
+
+		if err := s.db.Create(&session).Error; err != nil {
+			log.Printf("Error sincronizando sesión %s: %v", session.ID, err)
+		}
+	}
+
+	log.Printf("Nodo %d sincronizó %d sesiones desde nodo %d",
+		s.nodeID, len(req.Sessions), req.NodeID)
 
 	return c.JSON(fiber.Map{
 		"message":  "Sync completed",
