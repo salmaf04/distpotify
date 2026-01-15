@@ -238,80 +238,6 @@ func (s *Server) syncDataFromLeader() {
 	go s.SyncMissingFilesFromLeader()
 }
 
-func (s *Server) applyOperations(ops []Operation) {
-	for _, op := range ops {
-		switch op.Type {
-		case OpCreate:
-			// CORRECCIÓN: Usar Upsert aquí también
-			s.db.Clauses(clause.OnConflict{
-				Columns:   []clause.Column{{Name: "id"}},
-				DoUpdates: clause.AssignmentColumns([]string{"title", "artist", "duration", "file_path"}),
-			}).Create(&op.Data)
-
-		case OpCreateUser:
-			if op.UserData != nil {
-				s.db.Clauses(clause.OnConflict{
-					Columns:   []clause.Column{{Name: "id"}},
-					DoUpdates: clause.AssignmentColumns([]string{"username", "password", "role"}),
-				}).Create(op.UserData)
-			}
-		case OpCreateSession:
-			if op.SessionData != nil {
-				s.db.Clauses(clause.OnConflict{
-					Columns:   []clause.Column{{Name: "id"}},
-					DoUpdates: clause.AssignmentColumns([]string{"last_activity", "expires_at", "ip_address"}),
-				}).Create(op.SessionData)
-			}
-		}
-
-		jsonData, _ := json.Marshal(op.Data)
-		var userJson []byte
-		var sessionJson []byte
-
-		if op.UserData != nil {
-			userJson, _ = json.Marshal(op.UserData)
-		}
-		if op.SessionData != nil {
-			sessionJson, _ = json.Marshal(op.SessionData)
-		}
-
-		opLogEntry := models.OperationLog{
-			ID:          uint(op.Index), // Forzamos que el ID sea igual al Index para consistencia total
-			Index:       op.Index,       // El Index original del líder
-			Type:        string(op.Type),
-			Data:        jsonData,
-			UserData:    userJson,
-			SessionData: sessionJson,
-			Timestamp:   op.Timestamp,
-		}
-
-		// Usar Upsert (OnConflict DoNothing) para insertar en operation_logs
-		// Esto garantiza que si ya tenemos este log, no se duplique ni falle
-		if err := s.db.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "index"}}, // Clave única es el Index
-			DoNothing: true,                             // Si ya existe, es idéntico (logs inmutables)
-		}).Create(&opLogEntry).Error; err != nil {
-			log.Printf("Error replicando OpLog %d: %v", op.Index, err)
-		}
-
-	}
-
-	go func() {
-		s.db.Exec("SELECT setval('songs_id_seq', COALESCE((SELECT MAX(id) FROM songs), 1))")
-		s.db.Exec("SELECT setval('users_id_seq', COALESCE((SELECT MAX(id) FROM users), 1))")
-		s.db.Exec("SELECT setval('sessions_id_seq', COALESCE((SELECT MAX(id) FROM users), 1))")
-		// IMPORTANTE: operation_logs
-		s.db.Exec("SELECT setval('operation_logs_id_seq', COALESCE((SELECT MAX(id) FROM operation_logs), 1))")
-	}()
-
-	// Marcar como sincronizado después de aplicar las operaciones
-	if len(ops) > 0 {
-		s.syncMutex.Lock()
-		s.isSyncedWithLeader = true
-		s.syncMutex.Unlock()
-	}
-}
-
 // Handler para sync interno
 func (s *Server) syncHandler(c *fiber.Ctx) error {
 	type SyncRequest struct {
@@ -1019,6 +945,99 @@ func (s *Server) reconcileHandler(c *fiber.Ctx) error {
 
 	log.Printf("Reconciliación completada. IDs duplicados resueltos.")
 	return c.SendStatus(fiber.StatusOK)
+}
+
+func (s *Server) applyOperations(ops []Operation) {
+	for _, op := range ops {
+		switch op.Type {
+		case OpCreate:
+			var existingSong models.Song
+			result := s.db.First(&existingSong, op.Data.ID)
+
+			if result.Error != nil {
+				s.db.Where("id > ?", op.Data.ID).Limit(50).Delete(&models.Song{})
+				log.Printf("Eliminando canciones a partir del ID %d", op.Data.ID)
+			}
+
+			if err := s.db.Create(&op.Data).Error; err != nil {
+				log.Printf("Error creando canción %d: %v", op.Data.ID, err)
+				continue
+			}
+
+		case OpCreateUser:
+			var existingUser models.User
+			result := s.db.First(&existingUser, op.UserData.ID)
+
+			if result.Error != nil {
+				s.db.Where("id > ?", op.UserData.ID).Limit(50).Delete(&models.User{})
+				log.Printf("Eliminando usuarios a partir del ID %d", op.UserData.ID)
+			}
+
+			if err := s.db.Create(&op.UserData).Error; err != nil {
+				log.Printf("Error creando usuario %d: %v", op.UserData.ID, err)
+				continue
+			}
+		case OpCreateSession:
+			var existingSession models.Session
+			result := s.db.First(&existingSession, op.SessionData.ID)
+
+			if result.Error != nil {
+				s.db.Where("id > ?", op.SessionData.ID).Limit(50).Delete(&models.Session{})
+				log.Printf("Eliminando Session a partir del ID %s", op.SessionData.ID)
+			}
+
+			if err := s.db.Create(&op.SessionData).Error; err != nil {
+				log.Printf("Error creando sesión %s: %v", op.SessionData.ID, err)
+				continue
+			}
+		}
+
+		jsonData, _ := json.Marshal(op.Data)
+		var userJson []byte
+		var sessionJson []byte
+
+		if op.UserData != nil {
+			userJson, _ = json.Marshal(op.UserData)
+		}
+		if op.SessionData != nil {
+			sessionJson, _ = json.Marshal(op.SessionData)
+		}
+
+		opLogEntry := models.OperationLog{
+			ID:          uint(op.Index), // Forzamos que el ID sea igual al Index para consistencia total
+			Index:       op.Index,       // El Index original del líder
+			Type:        string(op.Type),
+			Data:        jsonData,
+			UserData:    userJson,
+			SessionData: sessionJson,
+			Timestamp:   op.Timestamp,
+		}
+
+		// Usar Upsert (OnConflict DoNothing) para insertar en operation_logs
+		// Esto garantiza que si ya tenemos este log, no se duplique ni falle
+		if err := s.db.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "index"}}, // Clave única es el Index
+			DoNothing: true,                             // Si ya existe, es idéntico (logs inmutables)
+		}).Create(&opLogEntry).Error; err != nil {
+			log.Printf("Error replicando OpLog %d: %v", op.Index, err)
+		}
+
+	}
+
+	go func() {
+		s.db.Exec("SELECT setval('songs_id_seq', COALESCE((SELECT MAX(id) FROM songs), 1))")
+		s.db.Exec("SELECT setval('users_id_seq', COALESCE((SELECT MAX(id) FROM users), 1))")
+		s.db.Exec("SELECT setval('sessions_id_seq', COALESCE((SELECT MAX(id) FROM users), 1))")
+		// IMPORTANTE: operation_logs
+		s.db.Exec("SELECT setval('operation_logs_id_seq', COALESCE((SELECT MAX(id) FROM operation_logs), 1))")
+	}()
+
+	// Marcar como sincronizado después de aplicar las operaciones
+	if len(ops) > 0 {
+		s.syncMutex.Lock()
+		s.isSyncedWithLeader = true
+		s.syncMutex.Unlock()
+	}
 }
 
 func (s *Server) getMaxIDAlternative(tableName string) uint {
