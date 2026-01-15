@@ -254,16 +254,6 @@ func (s *Server) DownloadFileFromLeader(filename string) error {
 
 // Handler para servir archivos a otros nodos (solo líder)
 func (s *Server) downloadFileHandler(c *fiber.Ctx) error {
-	s.mu.RLock()
-	isLeader := s.isLeader
-	s.mu.RUnlock()
-
-	if !isLeader {
-		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
-			"error": "Solo el líder puede servir archivos",
-		})
-	}
-
 	filename := c.Query("filename")
 	if filename == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
@@ -324,4 +314,31 @@ func (s *Server) SyncMissingFilesFromLeader() {
 			}
 		}
 	}
+}
+
+func (s *Server) downloadFileFromNode(filename string, nodeID int) error {
+	nodeURL := s.nodeURL(nodeID)
+	url := fmt.Sprintf("%s/internal/download-file?filename=%s", nodeURL, filename)
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("status %d", resp.StatusCode)
+	}
+
+	// Save logic (reuse existing logic from receiveFileHandler or similar)
+	destPath := filepath.Join("storage/songs", filename)
+	out, err := os.Create(destPath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	io.Copy(out, resp.Body)
+
+	return nil
 }

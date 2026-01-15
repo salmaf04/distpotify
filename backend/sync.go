@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -960,6 +962,18 @@ func (s *Server) reconcileHandler(c *fiber.Ctx) error {
 			}
 		}
 	}
+
+	go func() {
+		for _, song := range req.Songs {
+			// Check if file exists locally
+			filePath := filepath.Join("storage/songs", song.File)
+			if _, err := os.Stat(filePath); os.IsNotExist(err) {
+				log.Printf("Reconciliación: Descargando archivo faltante %s desde nodo perdedor %d", song.File, req.NodeID)
+				// You need to implement/expose a method to download from a specific node ID
+				s.downloadFileFromNode(song.File, req.NodeID)
+			}
+		}
+	}()
 
 	// Procesar Usuarios
 	for _, incomingUser := range req.Users {
