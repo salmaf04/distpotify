@@ -432,6 +432,8 @@ func (s *Server) syncHandler(c *fiber.Ctx) error {
 		if err := s.db.Create(&session).Error; err != nil {
 			log.Printf("Error sincronizando sesión %s: %v", session.ID, err)
 		}
+
+		s.opLog.AppendSession(OpCreateSession, session)
 	}
 
 	log.Printf("Nodo %d sincronizó %d sesiones desde nodo %d",
