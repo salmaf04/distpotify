@@ -35,6 +35,146 @@ type ReplicationSession struct {
 	ExpiresAt    time.Time `json:"expires_at"`
 }
 
+type SnapshotData struct {
+	Songs            []models.Song         `json:"songs"`
+	Sessions         []ReplicationSession  `json:"sessions"`
+	Users            []ReplicationUser     `json:"users"`
+	OperationLogs    []models.OperationLog `json:"operation_logs"`
+	LastAppliedIndex int64                 `json:"last_applied_index"`
+	NodeID           int                   `json:"node_id"`
+}
+
+func (s *Server) PropagateSnapshotToFollowers() {
+	log.Println("⚡ LÍDER: Propagando snapshot completo a todos los followers...")
+
+	// 1. Recolectar estado actual
+	var songs []models.Song
+	s.db.Find(&songs)
+
+	var users []models.User
+	s.db.Find(&users)
+
+	var sessions []models.Session
+	s.db.Find(&sessions)
+
+	var logs []models.OperationLog
+	s.db.Find(&logs)
+
+	// Convertir a estructuras de replicación
+	var repUsers []ReplicationUser
+	for _, u := range users {
+		repUsers = append(repUsers, ReplicationUser{
+			ID: u.ID, Username: u.Username, Password: u.Password,
+			Role: u.Role, CreatedAt: u.CreatedAt, UpdatedAt: u.UpdatedAt,
+		})
+	}
+
+	var repSessions []ReplicationSession
+	for _, sess := range sessions {
+		repSessions = append(repSessions, ReplicationSession{
+			ID: sess.ID, UserID: sess.UserID, IPAddress: sess.IPAddress,
+			UserAgent: sess.UserAgent, LastActivity: sess.LastActivity, ExpiresAt: sess.ExpiresAt,
+		})
+	}
+
+	lastIndex, _ := s.opLog.GetLastOperationInfo()
+
+	snapshot := SnapshotData{
+		Songs:            songs,
+		Users:            repUsers,
+		Sessions:         repSessions,
+		OperationLogs:    logs,
+		LastAppliedIndex: lastIndex,
+		NodeID:           s.nodeID,
+	}
+
+	// 2. Enviar a todos los nodos en paralelo
+	followers := s.getAllNodeIDs()
+	for _, id := range followers {
+		if id == s.nodeID {
+			continue
+		}
+
+		go func(targetID int) {
+			url := fmt.Sprintf("%s/internal/sync/receive-snapshot", s.nodeURL(targetID))
+			jsonData, _ := json.Marshal(snapshot)
+
+			client := &http.Client{Timeout: 30 * time.Second}
+			resp, err := client.Post(url, "application/json", bytes.NewBuffer(jsonData))
+
+			if err != nil {
+				log.Printf("❌ Error enviando snapshot a nodo %d: %v", targetID, err)
+				return
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode == 200 {
+				log.Printf("✅ Snapshot entregado correctamente a nodo %d", targetID)
+			}
+		}(id)
+	}
+}
+
+// Handler para recibir y APLICAR el snapshot forzado
+func (s *Server) receiveSnapshotHandler(c *fiber.Ctx) error {
+	var data SnapshotData
+	if err := c.BodyParser(&data); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	log.Printf("📥 Recibiendo SNAPSHOT FORZADO del líder %d. Sobreescribiendo estado local...", data.NodeID)
+
+	// Actualizar líder
+	s.mu.Lock()
+	s.leaderID = data.NodeID
+	s.isLeader = false
+	s.mu.Unlock()
+
+	tx := s.db.Begin()
+	if tx.Error != nil {
+		return c.SendStatus(fiber.StatusInternalServerError)
+	}
+
+	// 1. Limpiar todo (TRUNCATE)
+	tx.Exec("TRUNCATE TABLE songs RESTART IDENTITY CASCADE")
+	tx.Exec("TRUNCATE TABLE sessions RESTART IDENTITY CASCADE")
+	tx.Exec("TRUNCATE TABLE users RESTART IDENTITY CASCADE")
+	tx.Exec("TRUNCATE TABLE operation_logs RESTART IDENTITY CASCADE")
+
+	// 2. Insertar datos recibidos
+	for _, song := range data.Songs {
+		tx.Create(&song)
+	}
+	for _, u := range data.Users {
+		tx.Create(&models.User{
+			ID: u.ID, Username: u.Username, Password: u.Password,
+			Role: u.Role, CreatedAt: u.CreatedAt, UpdatedAt: u.UpdatedAt,
+		})
+	}
+	for _, sess := range data.Sessions {
+		tx.Create(&models.Session{
+			ID: sess.ID, UserID: sess.UserID, IPAddress: sess.IPAddress,
+			UserAgent: sess.UserAgent, LastActivity: sess.LastActivity, ExpiresAt: sess.ExpiresAt,
+		})
+	}
+	for _, op := range data.OperationLogs {
+		tx.Create(&op)
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		log.Printf("Error aplicando snapshot: %v", err)
+		return c.SendStatus(fiber.StatusInternalServerError)
+	}
+
+	s.fixSequences()
+
+	// 3. IMPORTANTE: Disparar sincronización de archivos MP3 faltantes
+	// Esto solo descargará los archivos que NO existan en disco
+	go s.SyncMissingFilesFromLeader()
+
+	return c.SendStatus(fiber.StatusOK)
+}
+
 func (s *Server) fixSequences() {
 	// Arreglar secuencia de Songs
 	s.db.Exec("SELECT setval('songs_id_seq', (SELECT MAX(id) FROM songs));")
@@ -940,6 +1080,9 @@ func (s *Server) reconcileHandler(c *fiber.Ctx) error {
 	}
 
 	log.Printf("Reconciliación completada. IDs duplicados resueltos.")
+
+	go s.PropagateSnapshotToFollowers()
+
 	return c.SendStatus(fiber.StatusOK)
 }
 

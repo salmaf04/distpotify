@@ -195,6 +195,7 @@ func (s *Server) setupRoutes() {
 
 	s.app.Post("/internal/election", s.electionHandler)
 	s.app.Get("/internal/songs/snapshot", s.songsSnapshotHandler)
+	s.app.Post("/internal/sync/receive-snapshot", s.receiveSnapshotHandler)
 
 	// Sincronización (para uso interno)
 	s.app.Post("/internal/sync", s.syncHandler)
