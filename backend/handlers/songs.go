@@ -149,7 +149,7 @@ func (h *SongHandler) GetAllSongs(c *fiber.Ctx) error {
 	var songs []models.Song
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	result := h.DB.WithContext(ctx).Find(&songs)
+	result := h.DB.WithContext(ctx).Find(&songs).Order("name DESC")
 	if result.Error != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": result.Error.Error()})
 	}
