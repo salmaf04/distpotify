@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +21,7 @@ type BackendNode struct {
 	ID        int
 	IP        string
 	LastCheck time.Time
+	Latency   time.Duration
 	mu        sync.RWMutex
 }
 
@@ -111,6 +113,7 @@ func (rp *ReverseProxy) discoverBackends() {
 			ID:        newID,
 			IP:        ip,
 			LastCheck: time.Now(),
+			Latency:   10 * time.Second,
 		}
 
 		rp.backends[newID] = newBackend
@@ -145,10 +148,15 @@ func (rp *ReverseProxy) checkAllBackends() {
 		wg.Add(1)
 		go func(b *BackendNode) {
 			defer wg.Done()
-			alive := rp.isBackendAlive(b.URL)
+			alive, latency := rp.measureBackendHealth(b.URL)
 
 			b.mu.Lock()
 			b.IsAlive = alive
+			b.Latency = latency
+			if !alive {
+
+				b.Latency = 5 * time.Second
+			}
 			b.LastCheck = time.Now()
 			b.mu.Unlock()
 		}(backend)
@@ -156,7 +164,7 @@ func (rp *ReverseProxy) checkAllBackends() {
 	wg.Wait()
 }
 
-func (rp *ReverseProxy) isBackendAlive(url string) bool {
+func (rp *ReverseProxy) measureBackendHealth(url string) (bool, time.Duration) {
 	req := fasthttp.AcquireRequest()
 	defer fasthttp.ReleaseRequest(req)
 
@@ -166,12 +174,12 @@ func (rp *ReverseProxy) isBackendAlive(url string) bool {
 	req.SetRequestURI(url + "/health")
 	req.Header.SetMethod("GET")
 
+	start := time.Now()
 	err := rp.client.DoTimeout(req, resp, 2*time.Second)
-	if err != nil {
-		return false
-	}
+	latency := time.Since(start)
 
-	return resp.StatusCode() == fiber.StatusOK
+	alive := err == nil && resp.StatusCode() == fiber.StatusOK
+	return alive, latency
 }
 
 type clusterResponse struct {
@@ -179,7 +187,7 @@ type clusterResponse struct {
 	IsLeader bool `json:"is_leader"`
 }
 
-func (rp *ReverseProxy) getClusterInfo(url string) (int, bool, error) {
+func (rp *ReverseProxy) getClusterInfo(url string) (int, bool, time.Duration, error) {
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
@@ -188,20 +196,21 @@ func (rp *ReverseProxy) getClusterInfo(url string) (int, bool, error) {
 	req.SetRequestURI(url + "/cluster")
 	req.Header.SetMethod("GET")
 
+	start := time.Now()
 	if err := rp.client.DoTimeout(req, resp, 2*time.Second); err != nil {
-		return 0, false, err
+		return 0, false, time.Since(start), err
 	}
-
+	latency := time.Since(start)
 	if resp.StatusCode() != 200 {
-		return 0, false, fmt.Errorf("status %d", resp.StatusCode())
+		return 0, false, latency, fmt.Errorf("status %d", resp.StatusCode())
 	}
 
 	var cr clusterResponse
 	if err := json.Unmarshal(resp.Body(), &cr); err != nil {
-		return 0, false, err
+		return 0, false, latency, err
 	}
 
-	return cr.NodeID, cr.IsLeader, nil
+	return cr.NodeID, cr.IsLeader, latency, nil
 }
 
 func (rp *ReverseProxy) discoverLeader() {
@@ -224,20 +233,20 @@ func (rp *ReverseProxy) discoverLeader() {
 			continue
 		}
 
-		nodeID, isLeader, err := rp.getClusterInfo(backend.URL)
+		nodeID, isLeader, latency, err := rp.getClusterInfo(backend.URL)
 		if err != nil {
 			continue
 		}
 
-		// Actualizar el ID real del backend (importante para consistencia)
+		// Actualizar latencia
 		backend.mu.Lock()
-		backend.ID = nodeID         // ¡Ahora usamos el node_id real del backend!
-		backend.IsLeader = isLeader // Actualizamos directamente aquí también
+		backend.Latency = latency
+		backend.ID = nodeID
+		backend.IsLeader = isLeader
 		backend.mu.Unlock()
 
 		if isLeader {
 			newLeaderID = nodeID
-			// No hacemos break porque queremos actualizar los IDs de todos
 		}
 	}
 
@@ -367,7 +376,7 @@ func (rp *ReverseProxy) CreateProxyHandler() fiber.Handler {
 			}
 		} else {
 			// Para lecturas, usar cualquier backend vivo
-			targetBackend, found = rp.getRandomBackend()
+			targetBackend, found = rp.getLowestLatencyBackend()
 			if !found {
 				return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
 					"error": "No hay backends disponibles",
@@ -426,4 +435,39 @@ func (rp *ReverseProxy) CreateProxyHandler() fiber.Handler {
 
 		return nil
 	}
+}
+
+func (rp *ReverseProxy) getLowestLatencyBackend() (*BackendNode, bool) {
+	rp.mu.RLock()
+	defer rp.mu.RUnlock()
+
+	type candidate struct {
+		node    *BackendNode
+		latency time.Duration
+	}
+
+	var candidates []candidate
+
+	for _, backend := range rp.backends {
+		backend.mu.RLock()
+		if backend.IsAlive {
+			candidates = append(candidates, candidate{
+				node:    backend,
+				latency: backend.Latency,
+			})
+		}
+		backend.mu.RUnlock()
+	}
+
+	if len(candidates) == 0 {
+		return nil, false
+	}
+
+	// Ordenar por latencia ascendente
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].latency < candidates[j].latency
+	})
+
+	// Seleccionar el de menor latencia
+	return candidates[0].node, true
 }
