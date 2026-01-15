@@ -1100,7 +1100,7 @@ func (s *Server) applyOperations(ops []Operation) {
 			var existingSong models.Song
 			result := s.db.Where("id = ?", op.Data.ID).First(&existingSong)
 
-			if result.Error != nil {
+			if result.Error != nil && result.Error == gorm.ErrRecordNotFound {
 				s.db.Where("id > ?", op.Data.ID).Limit(50).Delete(&models.Song{})
 				log.Printf("Eliminando canciones a partir del ID %d", op.Data.ID)
 			}
@@ -1114,7 +1114,7 @@ func (s *Server) applyOperations(ops []Operation) {
 			var existingUser models.User
 			result := s.db.Where("id = ?", op.UserData.ID).First(&existingUser)
 
-			if result.Error != nil {
+			if result.Error != nil && result.Error == gorm.ErrRecordNotFound {
 				s.db.Where("id > ?", op.UserData.ID).Limit(50).Delete(&models.User{})
 				log.Printf("Eliminando usuarios a partir del ID %d", op.UserData.ID)
 			}
@@ -1127,7 +1127,7 @@ func (s *Server) applyOperations(ops []Operation) {
 			var existingSession models.Session
 			result := s.db.Where("id = ?", op.SessionData.ID).First(&existingSession)
 
-			if result.Error != nil {
+			if result.Error != nil && result.Error == gorm.ErrRecordNotFound {
 				log.Printf("YA EXISTE UNA SESION con ID %s que corresponde al usuario con ID %d", existingSession.ID, existingSession.UserID)
 				s.db.Where("id > ?", op.SessionData.ID).Limit(50).Delete(&models.Session{})
 				log.Printf("Eliminando Session a partir del ID %s", op.SessionData.ID)
