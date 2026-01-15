@@ -217,10 +217,6 @@ func (s *Server) syncDataFromLeader() {
 		log.Printf("Error actualizando seq op_logs: %v", err)
 	}
 
-	if err := tx.Exec("SELECT setval('sessions_id_seq', COALESCE((SELECT MAX(id) FROM sessions), 1))").Error; err != nil {
-		log.Printf("Error actualizando seq op_logs: %v", err)
-	}
-
 	// Commit de la transacción
 	if err := tx.Commit().Error; err != nil {
 		log.Printf("Error haciendo commit de sync desde líder: %v", err)
