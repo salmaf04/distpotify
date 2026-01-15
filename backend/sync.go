@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
 	"github.com/gofiber/fiber/v2"
@@ -835,10 +837,11 @@ func (s *Server) triggerReconciliation(targetNodeID int) {
 // reconcileHandler recibe datos de un nodo perdedor y los integra
 func (s *Server) reconcileHandler(c *fiber.Ctx) error {
 	type ReconcileRequest struct {
-		Songs    []models.Song        `json:"songs"`
-		Sessions []ReplicationSession `json:"sessions"`
-		Users    []ReplicationUser    `json:"users"`
-		NodeID   int                  `json:"node_id"`
+		Songs      []models.Song        `json:"songs"`
+		Sessions   []ReplicationSession `json:"sessions"`
+		Users      []ReplicationUser    `json:"users"`
+		NodeID     int                  `json:"node_id"`
+		NodePrefix string               `json:"node_prefix"`
 	}
 
 	var req ReconcileRequest
@@ -849,60 +852,218 @@ func (s *Server) reconcileHandler(c *fiber.Ctx) error {
 	log.Printf("Procesando RECONCILIACIÓN del nodo %d (%d songs, %d users, %d sessions)",
 		req.NodeID, len(req.Songs), len(req.Users), len(req.Sessions))
 
-	// Procesar Canciones (Upsert + OpLog)
-	for _, song := range req.Songs {
-		// Upsert: Si existe por ID, actualiza campos. Si no, crea.
-		if err := s.db.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "id"}},
-			DoUpdates: clause.AssignmentColumns([]string{"title", "artist", "duration", "file_path", "album", "genre", "updated_at"}),
-		}).Create(&song).Error; err != nil {
-			log.Printf("Error reconciliando canción %d: %v", song.ID, err)
+	// Procesar Canciones evitando colisiones de IDs
+	for _, incomingSong := range req.Songs {
+		// PASO 1: Verificar si el ID ya existe localmente
+		var existingSong models.Song
+		result := s.db.First(&existingSong, incomingSong.ID)
+
+		if result.Error != nil && result.Error == gorm.ErrRecordNotFound {
+			// El ID no existe localmente → CREAR normalmente
+			if err := s.db.Create(&incomingSong).Error; err != nil {
+				log.Printf("Error creando canción %d: %v", incomingSong.ID, err)
+				continue
+			}
+			s.opLog.Append(OpCreate, incomingSong)
+
+		} else if result.Error != nil {
+			log.Printf("Error consultando canción %d: %v", incomingSong.ID, result.Error)
 			continue
+
+		} else {
+			if s.isSameSong(existingSong, incomingSong) {
+				log.Printf("Canción ID %d ya existe, actualizando si es necesario", incomingSong.ID)
+				if !s.songsAreEqual(existingSong, incomingSong) {
+					if err := s.db.Model(&existingSong).Updates(map[string]interface{}{
+						"title":      incomingSong.Title,
+						"artist":     incomingSong.Artist,
+						"duration":   incomingSong.Duration,
+						"file_path":  incomingSong.File,
+						"album":      incomingSong.Album,
+						"genre":      incomingSong.Genre,
+						"updated_at": time.Now(),
+					}).Error; err != nil {
+						log.Printf("Error actualizando canción %d: %v", incomingSong.ID, err)
+						continue
+					}
+					s.opLog.Append(OpUpdate, incomingSong)
+				}
+			} else {
+				log.Printf("COLISIÓN DETECTADA: ID %d usado por canción '%s - %s' (local) vs '%s - %s' (remota)",
+					incomingSong.ID, existingSong.Title, existingSong.Artist, incomingSong.Title, incomingSong.Artist)
+
+				newID := s.getMaxIDAlternative("songs")
+				log.Printf("Asignando nuevo ID %d a canción entrante '%s - %s'", newID, incomingSong.Title, incomingSong.Artist)
+
+				incomingSong.ID = newID
+				if err := s.db.Create(&incomingSong).Error; err != nil {
+					log.Printf("Error creando canción con nuevo ID %d: %v", newID, err)
+					continue
+				}
+
+				s.opLog.Append(OpCreate, incomingSong)
+			}
 		}
-		// IMPORTANTE: Generar OpLog para que esto se replique a otros nodos
-		s.opLog.Append(OpCreate, song)
 	}
 
-	// Procesar Usuarios (Upsert + OpLog)
-	for _, rUser := range req.Users {
-		user := models.User{
-			ID:        rUser.ID,
-			Username:  rUser.Username,
-			Password:  rUser.Password,
-			Role:      rUser.Role,
-			CreatedAt: rUser.CreatedAt,
-			UpdatedAt: rUser.UpdatedAt,
+	// Procesar Usuarios
+	for _, incomingUser := range req.Users {
+		var localUser models.User
+		result := s.db.First(&localUser, incomingUser.ID)
+
+		if result.Error != nil && result.Error == gorm.ErrRecordNotFound {
+			// Crear usuario nuevo
+			user := models.User{
+				ID:        incomingUser.ID,
+				Username:  incomingUser.Username,
+				Password:  incomingUser.Password,
+				Role:      incomingUser.Role,
+				CreatedAt: incomingUser.CreatedAt,
+				UpdatedAt: incomingUser.UpdatedAt,
+			}
+			if err := s.db.Create(&user).Error; err != nil {
+				log.Printf("Error creando usuario %d: %v", incomingUser.ID, err)
+				continue
+			}
+			s.opLog.AppendUser(OpCreateUser, user)
+
+		} else if result.Error == nil {
+			// Verificar si es el mismo usuario
+			if s.isSameUser(localUser, incomingUser) {
+				// Actualizar si hay cambios
+				if localUser.UpdatedAt.Before(incomingUser.UpdatedAt) ||
+					localUser.Username != incomingUser.Username ||
+					localUser.Password != incomingUser.Password ||
+					localUser.Role != incomingUser.Role {
+
+					if err := s.db.Model(&localUser).Updates(map[string]interface{}{
+						"username":   incomingUser.Username,
+						"password":   incomingUser.Password,
+						"role":       incomingUser.Role,
+						"updated_at": time.Now(),
+					}).Error; err != nil {
+						log.Printf("Error actualizando usuario %d: %v", localUser.ID, err)
+						continue
+					}
+					s.opLog.AppendUser(OnUpdateUser, models.User{
+						ID:       localUser.ID,
+						Username: incomingUser.Username,
+						Password: incomingUser.Password,
+						Role:     incomingUser.Role,
+					})
+				}
+			} else {
+				// Colisión de ID de usuario
+				log.Printf("COLISIÓN DETECTADA en usuario: ID %d usado por '%s' (local) vs '%s' (remota)",
+					incomingUser.ID, localUser.Username, incomingUser.Username)
+
+				newID := s.getMaxIDAlternative("users")
+
+				user := models.User{
+					ID:        newID,
+					Username:  incomingUser.Username,
+					Password:  incomingUser.Password,
+					Role:      incomingUser.Role,
+					CreatedAt: incomingUser.CreatedAt,
+					UpdatedAt: incomingUser.UpdatedAt,
+				}
+
+				if err := s.db.Create(&user).Error; err != nil {
+					log.Printf("Error creando usuario con nuevo ID %d: %v", newID, err)
+					continue
+				}
+
+				s.opLog.AppendUser(OpCreateUser, user)
+			}
 		}
-		if err := s.db.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "id"}},
-			DoUpdates: clause.AssignmentColumns([]string{"username", "password", "role", "updated_at"}),
-		}).Create(&user).Error; err != nil {
-			log.Printf("Error reconciliando usuario %d: %v", user.ID, err)
-			continue
-		}
-		s.opLog.AppendUser(OpCreateUser, user)
 	}
 
-	// Procesar Sesiones (Upsert + OpLog)
-	for _, sess := range req.Sessions {
-		session := models.Session{
-			ID:           sess.ID,
-			UserID:       sess.UserID,
-			IPAddress:    sess.IPAddress,
-			UserAgent:    sess.UserAgent,
-			LastActivity: sess.LastActivity,
-			ExpiresAt:    sess.ExpiresAt,
+	// Procesar Sesiones
+	for _, incomingSession := range req.Sessions {
+		var localSession models.Session
+		result := s.db.First(&localSession, incomingSession.ID)
+
+		if result.Error != nil && result.Error == gorm.ErrRecordNotFound {
+			session := models.Session{
+				ID:           incomingSession.ID,
+				UserID:       incomingSession.UserID,
+				IPAddress:    incomingSession.IPAddress,
+				UserAgent:    incomingSession.UserAgent,
+				LastActivity: incomingSession.LastActivity,
+				ExpiresAt:    incomingSession.ExpiresAt,
+			}
+			if err := s.db.Create(&session).Error; err != nil {
+				log.Printf("Error creando sesión %s: %v", incomingSession.ID, err)
+				continue
+			}
+			s.opLog.AppendSession(OpCreateSession, session)
+
+		} else if result.Error == nil {
+			// Para sesiones, podemos simplemente actualizar ya que son temporales
+			if err := s.db.Model(&localSession).Updates(map[string]interface{}{
+				"last_activity": incomingSession.LastActivity,
+				"expires_at":    incomingSession.ExpiresAt,
+				"ip_address":    incomingSession.IPAddress,
+			}).Error; err != nil {
+				log.Printf("Error actualizando sesión %s: %v", incomingSession.ID, err)
+				continue
+			}
+			s.opLog.AppendSession(OnUpdateSession, models.Session{
+				ID:           localSession.ID,
+				UserID:       localSession.UserID,
+				LastActivity: incomingSession.LastActivity,
+				ExpiresAt:    incomingSession.ExpiresAt,
+			})
 		}
-		if err := s.db.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "id"}},
-			DoUpdates: clause.AssignmentColumns([]string{"last_activity", "expires_at", "ip_address"}),
-		}).Create(&session).Error; err != nil {
-			log.Printf("Error reconciliando sesión %s: %v", session.ID, err)
-			continue
-		}
-		s.opLog.AppendSession(OpCreateSession, session)
 	}
 
-	log.Printf("Reconciliación completada. Datos fusionados exitosamente.")
+	log.Printf("Reconciliación completada. IDs duplicados resueltos.")
 	return c.SendStatus(fiber.StatusOK)
+}
+
+func (s *Server) getMaxIDAlternative(tableName string) uint {
+	var maxID uint
+
+	// Método alternativo usando GORM con modelos
+	switch tableName {
+	case "songs":
+		s.db.Model(&models.Song{}).Select("COALESCE(MAX(id), 0)").Scan(&maxID)
+	case "users":
+		s.db.Model(&models.User{}).Select("COALESCE(MAX(id), 0)").Scan(&maxID)
+	default:
+		log.Printf("Tabla %s no reconocida, usando valor por defecto", tableName)
+		var songsMax, usersMax uint
+		s.db.Model(&models.Song{}).Select("COALESCE(MAX(id), 0)").Scan(&songsMax)
+		s.db.Model(&models.User{}).Select("COALESCE(MAX(id), 0)").Scan(&usersMax)
+		maxID = max(songsMax, usersMax) + 1
+	}
+
+	return maxID + 1
+}
+
+// Funciones para comparar registros
+func (s *Server) isSameSong(a, b models.Song) bool {
+	return strings.EqualFold(a.Title, b.Title) &&
+		strings.EqualFold(a.Artist, b.Artist) &&
+		a.Duration == b.Duration
+}
+
+func (s *Server) songsAreEqual(a, b models.Song) bool {
+	return a.Title == b.Title &&
+		a.Artist == b.Artist &&
+		a.Duration == b.Duration &&
+		a.File == b.File &&
+		a.Album == b.Album &&
+		a.Genre == b.Genre
+}
+
+func (s *Server) isSameUser(a models.User, b ReplicationUser) bool {
+	return strings.EqualFold(a.Username, b.Username)
+}
+
+func max(a, b uint) uint {
+	if a > b {
+		return a
+	}
+	return b
 }

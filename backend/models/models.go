@@ -14,7 +14,7 @@ const (
 )
 
 type Session struct {
-	ID     string `gorm:"primaryKey;type:varchar(36)" json:"id"` // UUID o string único
+	ID     string `gorm:"primaryKey;type:varchar(36)" json:"id"`
 	UserID uint   `gorm:"not null;index" json:"user_id"`
 	User   User   `gorm:"foreignKey:UserID;constraint:OnDelete:CASCADE" json:"user,omitempty"`
 

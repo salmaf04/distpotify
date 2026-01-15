@@ -17,6 +17,8 @@ const (
 	OpUpdate        OperationType = "UPDATE"
 	OpDelete        OperationType = "DELETE"
 	OpCreateSession OperationType = "CREATE_SESSION"
+	OnUpdateUser    OperationType = "UPDATE_USER"
+	OnUpdateSession OperationType = "UPDATE_SESSION"
 )
 
 type Operation struct {
