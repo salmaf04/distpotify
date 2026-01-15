@@ -667,6 +667,8 @@ func (s *Server) replicateToFollowers(song models.Song, minAcks int) bool {
 
 // replicateSessionToFollowers replica una nueva sesión a todos los followers
 func (s *Server) replicateSessionToFollowers(session models.Session, minAcks int) bool {
+	log.Print("ESTOY REPLICANDO LA SESION")
+
 	followers := s.getAllNodeIDs()
 
 	// Filtrar mi propio ID
@@ -907,7 +909,7 @@ func (s *Server) reconcileHandler(c *fiber.Ctx) error {
 	for _, incomingSong := range req.Songs {
 		// PASO 1: Verificar si el ID ya existe localmente
 		var existingSong models.Song
-		result := s.db.First(&existingSong, incomingSong.ID)
+		result := s.db.Where("id = ?", incomingSong.ID).First(&existingSong)
 
 		if result.Error != nil && result.Error == gorm.ErrRecordNotFound {
 			// El ID no existe localmente → CREAR normalmente
@@ -960,7 +962,7 @@ func (s *Server) reconcileHandler(c *fiber.Ctx) error {
 	// Procesar Usuarios
 	for _, incomingUser := range req.Users {
 		var localUser models.User
-		result := s.db.First(&localUser, incomingUser.ID)
+		result := s.db.Where("id = ?", incomingUser.ID).First(&localUser)
 
 		if result.Error != nil && result.Error == gorm.ErrRecordNotFound {
 			// Crear usuario nuevo
@@ -1032,7 +1034,7 @@ func (s *Server) reconcileHandler(c *fiber.Ctx) error {
 	// Procesar Sesiones
 	for _, incomingSession := range req.Sessions {
 		var localSession models.Session
-		result := s.db.First(&localSession, incomingSession.ID)
+		result := s.db.Where("id = ?", incomingSession.ID).First(&localSession)
 
 		if result.Error != nil && result.Error == gorm.ErrRecordNotFound {
 			session := models.Session{
@@ -1080,7 +1082,7 @@ func (s *Server) applyOperations(ops []Operation) {
 		switch op.Type {
 		case OpCreate:
 			var existingSong models.Song
-			result := s.db.First(&existingSong, op.Data.ID)
+			result := s.db.Where("id = ?", op.Data.ID).First(&existingSong)
 
 			if result.Error != nil {
 				s.db.Where("id > ?", op.Data.ID).Limit(50).Delete(&models.Song{})
@@ -1094,7 +1096,7 @@ func (s *Server) applyOperations(ops []Operation) {
 
 		case OpCreateUser:
 			var existingUser models.User
-			result := s.db.First(&existingUser, op.UserData.ID)
+			result := s.db.Where("id = ?", op.UserData.ID).First(&existingUser)
 
 			if result.Error != nil {
 				s.db.Where("id > ?", op.UserData.ID).Limit(50).Delete(&models.User{})
@@ -1107,9 +1109,10 @@ func (s *Server) applyOperations(ops []Operation) {
 			}
 		case OpCreateSession:
 			var existingSession models.Session
-			result := s.db.First(&existingSession, op.SessionData.ID)
+			result := s.db.Where("id = ?", op.SessionData.ID).First(&existingSession)
 
 			if result.Error != nil {
+				log.Printf("YA EXISTE UNA SESION con ID %s que corresponde al usuario con ID %d", existingSession.ID, existingSession.UserID)
 				s.db.Where("id > ?", op.SessionData.ID).Limit(50).Delete(&models.Session{})
 				log.Printf("Eliminando Session a partir del ID %s", op.SessionData.ID)
 			}
@@ -1155,7 +1158,6 @@ func (s *Server) applyOperations(ops []Operation) {
 	go func() {
 		s.db.Exec("SELECT setval('songs_id_seq', COALESCE((SELECT MAX(id) FROM songs), 1))")
 		s.db.Exec("SELECT setval('users_id_seq', COALESCE((SELECT MAX(id) FROM users), 1))")
-		s.db.Exec("SELECT setval('sessions_id_seq', COALESCE((SELECT MAX(id) FROM users), 1))")
 		// IMPORTANTE: operation_logs
 		s.db.Exec("SELECT setval('operation_logs_id_seq', COALESCE((SELECT MAX(id) FROM operation_logs), 1))")
 	}()
