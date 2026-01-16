@@ -178,6 +178,8 @@ func (rp *ReverseProxy) measureBackendHealth(url string) (bool, time.Duration) {
 	err := rp.client.DoTimeout(req, resp, 2*time.Second)
 	latency := time.Since(start)
 
+	log.Printf("NODO con url: %s con latencua de  %f", url, latency.Seconds())
+
 	alive := err == nil && resp.StatusCode() == fiber.StatusOK
 	return alive, latency
 }
@@ -298,29 +300,6 @@ func (rp *ReverseProxy) getLeaderBackend() (*BackendNode, bool) {
 	return nil, false
 }
 
-func (rp *ReverseProxy) getRandomBackend() (*BackendNode, bool) {
-	rp.mu.RLock()
-	defer rp.mu.RUnlock()
-
-	// Obtener lista de backends vivos
-	var aliveBackends []*BackendNode
-	for _, backend := range rp.backends {
-		backend.mu.RLock()
-		if backend.IsAlive {
-			aliveBackends = append(aliveBackends, backend)
-		}
-		backend.mu.RUnlock()
-	}
-
-	if len(aliveBackends) == 0 {
-		return nil, false
-	}
-
-	// Selección round-robin simple
-	selected := aliveBackends[time.Now().Unix()%int64(len(aliveBackends))]
-	return selected, true
-}
-
 func (rp *ReverseProxy) isWriteOperation(method, path string) bool {
 	if method == "POST" || method == "PUT" || method == "DELETE" || method == "PATCH" {
 		return true
@@ -410,19 +389,36 @@ func (rp *ReverseProxy) CreateProxyHandler() fiber.Handler {
 		req.SetRequestURI(targetURL)
 		req.Header.SetMethod(method)
 
-		// Copiar headers
-		c.Request().Header.VisitAll(func(key, value []byte) {
-			req.Header.SetBytesKV(key, value)
-		})
+		// --- CORRECCIÓN CRÍTICA AQUÍ ---
+		// No copiar headers de control de transporte
+		ignoredHeaders := map[string]bool{
+			"Connection":          true,
+			"Keep-Alive":          true,
+			"Proxy-Authenticate":  true,
+			"Proxy-Authorization": true,
+			"Te":                  true,
+			"Trailers":            true,
+			"Transfer-Encoding":   true,
+			"Upgrade":             true,
+			"Content-Length":      true, // Fasthttp lo recalcula al hacer SetBody
+			"Host":                true, // Fasthttp lo establece con SetRequestURI
+		}
 
+		c.Request().Header.VisitAll(func(key, value []byte) {
+			keyStr := string(key)
+			if !ignoredHeaders[keyStr] {
+				req.Header.SetBytesKV(key, value)
+			}
+		})
 		// Copiar body
 		req.SetBody(c.Request().Body())
 
-		// Ejecutar request
-		if err := rp.client.DoTimeout(req, resp, 60*time.Second); err != nil {
-			log.Printf("Error forwarding request: %v", err)
+		// Ejecutar request (Reducido timeout a 30s, 60s es mucho para esperar un error)
+		if err := rp.client.DoTimeout(req, resp, 30*time.Second); err != nil {
+			log.Printf("Error forwarding request a %s: %v", targetURL, err)
 			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{
-				"error": "Error connecting to backend",
+				"error":   "Error connecting to backend",
+				"details": err.Error(),
 			})
 		}
 
@@ -468,6 +464,9 @@ func (rp *ReverseProxy) getLowestLatencyBackend() (*BackendNode, bool) {
 		return candidates[i].latency < candidates[j].latency
 	})
 
+	bestCandidate := candidates[0].node
+	log.Printf("El mejor candidato es nodo de ID: %d", bestCandidate.ID)
+
 	// Seleccionar el de menor latencia
-	return candidates[0].node, true
+	return bestCandidate, true
 }
