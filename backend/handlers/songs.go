@@ -62,12 +62,20 @@ func (h *SongHandler) InsertSong(c *fiber.Ctx, songInput *structs.SongInputModel
 // InsertSongDirect inserta la canción sin manejo de respuesta HTTP
 func (h *SongHandler) InsertSongDirect(songInput *structs.SongInputModel) (*models.Song, error) {
 	songInputCover := ""
-
 	if songInput.Cover != nil {
 		songInputCover = *songInput.Cover
 	}
 
+	// Obtener el próximo valor de la secuencia
+	var nextID int64
+	err := h.DB.Raw("SELECT nextval('songs_id_seq')").Scan(&nextID).Error
+	if err != nil {
+		log.Printf("InsertSongDirect: error obteniendo próximo ID: %v", err)
+		return nil, err
+	}
+
 	song := models.Song{
+		ID:       uint(nextID), // Usar uint si tu ID es unsigned
 		Title:    songInput.Title,
 		Artist:   songInput.Artist,
 		Album:    songInput.Album,
@@ -76,8 +84,6 @@ func (h *SongHandler) InsertSongDirect(songInput *structs.SongInputModel) (*mode
 		File:     songInput.File,
 		Cover:    songInputCover,
 	}
-
-	song.ID = 0
 
 	result := h.DB.Create(&song)
 	if result.Error != nil {
