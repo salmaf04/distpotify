@@ -64,16 +64,22 @@ func (h *SongHandler) InsertSongDirect(songInput *structs.SongInputModel) (*mode
 		songInputCover = *songInput.Cover
 	}
 
-	// Obtener el próximo valor de la secuencia
-	var nextID int64
-	err := h.DB.Raw("SELECT nextval('songs_id_seq')").Scan(&nextID).Error
+	// Obtener el máximo ID actual de la tabla
+	var maxID *int64
+	err := h.DB.Raw("SELECT MAX(id) FROM songs").Scan(&maxID).Error
 	if err != nil {
-		log.Printf("InsertSongDirect: error obteniendo próximo ID: %v", err)
+		log.Printf("InsertSongDirect: error obteniendo máximo ID: %v", err)
 		return nil, err
 	}
 
+	// Si la tabla está vacía, empezar desde 1
+	var nextID int64 = 1
+	if maxID != nil {
+		nextID = *maxID + 1
+	}
+
 	song := models.Song{
-		ID:       uint(nextID), // Usar uint si tu ID es unsigned
+		ID:       uint(nextID),
 		Title:    songInput.Title,
 		Artist:   songInput.Artist,
 		Album:    songInput.Album,
@@ -87,6 +93,14 @@ func (h *SongHandler) InsertSongDirect(songInput *structs.SongInputModel) (*mode
 	if result.Error != nil {
 		log.Printf("InsertSongDirect: error DB Create: %v", result.Error)
 		return nil, result.Error
+	}
+
+	// Actualizar la secuencia para que apunte al siguiente valor
+	updateSeqQuery := fmt.Sprintf("SELECT setval('songs_id_seq', %d, true)", nextID)
+	err = h.DB.Exec(updateSeqQuery).Error
+	if err != nil {
+		log.Printf("InsertSongDirect: warning - no se pudo actualizar la secuencia: %v", err)
+		// No retornamos error aquí porque la inserción fue exitosa
 	}
 
 	return &song, nil
