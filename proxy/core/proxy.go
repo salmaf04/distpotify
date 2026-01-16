@@ -31,7 +31,8 @@ type ReverseProxy struct {
 	leaderID     int
 	mu           sync.RWMutex
 	healthCheck  time.Duration
-	client       *fasthttp.Client
+	proxyClient  *fasthttp.Client // Para usuarios (pesado)
+	healthClient *fasthttp.Client // Para health checks (ligero y prioritario)
 	nextID       int
 }
 
@@ -46,14 +47,30 @@ func NewReverseProxy(serviceName string, port int) *ReverseProxy {
 	rp := &ReverseProxy{
 		backends:     make(map[int]*BackendNode),
 		backendByURL: make(map[string]*BackendNode),
-		healthCheck:  5 * time.Second, // Reducido de 10s a 5s
-		client: &fasthttp.Client{
+		healthCheck:  5 * time.Second,
+
+		// Cliente 1: Tráfico de Usuarios (Streams, API)
+		// Aumentamos MaxConnsPerHost porque el streaming ocupa el socket mucho tiempo
+		proxyClient: &fasthttp.Client{
 			NoDefaultUserAgentHeader: true,
 			DisablePathNormalizing:   true,
-			ReadTimeout:              60 * time.Second,
-			WriteTimeout:             60 * time.Second,
-			MaxConnsPerHost:          100,
+			ReadTimeout:              0,    // 0 = sin limite (necesario para streaming de audio)
+			WriteTimeout:             0,    // 0 = sin limite
+			MaxConnsPerHost:          2000, // <--- AUMENTADO DRASTICAMENTE
+			MaxIdleConnDuration:      30 * time.Second,
+			DialDualStack:            true, // Ayuda en redes Docker
 		},
+
+		// Cliente 2: Infraestructura (Health Checks, Discovery)
+		// Este cliente está aislado, el tráfico de canciones no le afecta
+		healthClient: &fasthttp.Client{
+			NoDefaultUserAgentHeader: true,
+			ReadTimeout:              5 * time.Second,
+			WriteTimeout:             5 * time.Second,
+			MaxConnsPerHost:          50, // Suficiente para checks
+			MaxIdleConnDuration:      5 * time.Second,
+		},
+
 		nextID: 1,
 	}
 
@@ -175,7 +192,7 @@ func (rp *ReverseProxy) measureBackendHealth(url string) (bool, time.Duration) {
 	req.Header.SetMethod("GET")
 
 	start := time.Now()
-	err := rp.client.DoTimeout(req, resp, 2*time.Second)
+	err := rp.healthClient.DoTimeout(req, resp, 3*time.Second)
 	latency := time.Since(start)
 
 	log.Printf("NODO con url: %s con latencua de  %f", url, latency.Seconds())
@@ -199,7 +216,7 @@ func (rp *ReverseProxy) getClusterInfo(url string) (int, bool, time.Duration, er
 	req.Header.SetMethod("GET")
 
 	start := time.Now()
-	if err := rp.client.DoTimeout(req, resp, 2*time.Second); err != nil {
+	if err := rp.healthClient.DoTimeout(req, resp, 3*time.Second); err != nil {
 		return 0, false, time.Since(start), err
 	}
 	latency := time.Since(start)
@@ -414,11 +431,10 @@ func (rp *ReverseProxy) CreateProxyHandler() fiber.Handler {
 		req.SetBody(c.Request().Body())
 
 		// Ejecutar request (Reducido timeout a 30s, 60s es mucho para esperar un error)
-		if err := rp.client.DoTimeout(req, resp, 30*time.Second); err != nil {
-			log.Printf("Error forwarding request a %s: %v", targetURL, err)
+		if err := rp.proxyClient.Do(req, resp); err != nil {
+			log.Printf("Error forwarding request: %v", err)
 			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{
-				"error":   "Error connecting to backend",
-				"details": err.Error(),
+				"error": "Error connecting to backend",
 			})
 		}
 

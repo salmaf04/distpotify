@@ -11,8 +11,6 @@ import (
 	"distributed-systems-project/models"
 	"distributed-systems-project/structs"
 	"distributed-systems-project/utils"
-	"encoding/base64"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -153,41 +151,24 @@ func (h *SongHandler) UploadSong(c *fiber.Ctx) error {
 
 func (h *SongHandler) GetAllSongs(c *fiber.Ctx) error {
 	var songs []models.Song
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // reducido, ya no lees archivos
 	defer cancel()
+
 	result := h.DB.WithContext(ctx).Find(&songs).Order("name DESC")
 	if result.Error != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": result.Error.Error()})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": result.Error.Error(),
+		})
 	}
 
 	var response []structs.SongResponse
-
 	for _, song := range songs {
-		// Construir ruta correcta para los archivos
-		filePath := getStoragePath(song.File)
-		coverPath := ""
+		// Construir URLs relativas (o absolutas si tu frontend está en otro dominio)
+		// Mejor por ID para evitar problemas con nombres de archivo
+		fileURL := fmt.Sprintf("/api/songs/%d/stream", song.ID)
+		coverURL := ""
 		if song.Cover != "" {
-			coverPath = getStoragePath(song.Cover)
-		}
-
-		fileData, err := os.ReadFile(filePath)
-		fileBase64 := ""
-		if err != nil {
-			fmt.Printf("Error leyendo archivo %s: %v\n", filePath, err)
-			fileBase64 = ""
-		} else {
-			fileBase64 = base64.StdEncoding.EncodeToString(fileData)
-		}
-
-		coverBase64 := ""
-		if coverPath != "" {
-			coverData, err := os.ReadFile(coverPath)
-			if err != nil {
-				fmt.Printf("Error leyendo cover %s: %v\n", coverPath, err)
-				coverBase64 = ""
-			} else {
-				coverBase64 = base64.StdEncoding.EncodeToString(coverData)
-			}
+			coverURL = fmt.Sprintf("/api/songs/%d/cover", song.ID)
 		}
 
 		response = append(response, structs.SongResponse{
@@ -197,8 +178,8 @@ func (h *SongHandler) GetAllSongs(c *fiber.Ctx) error {
 			Album:    song.Album,
 			Genre:    song.Genre,
 			Duration: song.Duration,
-			File:     fileBase64,
-			Cover:    coverBase64,
+			File:     fileURL,
+			Cover:    coverURL,
 		})
 	}
 
